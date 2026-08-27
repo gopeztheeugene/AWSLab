@@ -13,6 +13,7 @@ Set-Location $dest
 New-Item -ItemType Directory -Force -Path $dest
 if ($?){Write-Log "Folder Created"}
 
+#Download sysmon
 while ($true) {
     try {
     Invoke-WebRequest -Uri "https://download.sysinternals.com/files/Sysmon.zip" -OutFile $zip
@@ -25,7 +26,6 @@ while ($true) {
         Write-Log "Sysmon zip file downloaded succeeded"
         break
     }
-    
 }
 
 Expand-Archive -Path $zip -DestinationPath $dest -Force
@@ -34,6 +34,8 @@ if($?){
     Remove-Item $zip -Force
 }
 
+
+#Download sysmon config file
 while ($true) {
     try {
     Invoke-WebRequest -Uri $config_link -OutFile $sysmon_config
@@ -47,6 +49,7 @@ while ($true) {
         break
     }
 }
+
 
 try{
     Start-Process ` -FilePath "$dest\Sysmon64.exe" `
