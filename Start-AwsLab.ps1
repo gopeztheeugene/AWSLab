@@ -22,8 +22,17 @@
     ./Start-AwsLab.ps1 -Name DC, Kali
     Starts only the instances whose Name tag (or instance ID) matches. Wildcards work: -Name '*DC*'.
 
+.EXAMPLE
+    ./Start-AwsLab.ps1 -Connect -WinRmUser 'LAB\Administrator'
+    After launch, opens one Windows Terminal tab per reachable instance, already connecting.
+
 .PARAMETER Name
     Optional. Name tags or instance IDs to start; wildcards allowed. Omit to start every lab instance.
+.PARAMETER Connect
+    Optional. Open a terminal tab per reachable instance (Windows only): WinRM session for
+    Windows hosts, SSH for Kali. Uses Windows Terminal if installed, otherwise separate windows.
+.PARAMETER WinRmUser
+    Optional. Pre-fills the user name in each Windows tab's credential prompt.
 #>
 [CmdletBinding()]
 param(
@@ -33,7 +42,9 @@ param(
     [string[]] $SecurityGroupIds = @('sg-02df021a36003f4f1', 'sg-0549668744af8e82d'),
     [int]      $TimeoutMinutes   = 15,
     [string]   $StatePath        = (Join-Path $PSScriptRoot 'lab-state.json'),
-    [string]   $KaliKeyPath      = 'C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem'
+    [string]   $KaliKeyPath      = 'C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem',
+    [switch]   $Connect,
+    [string]   $WinRmUser
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,6 +90,17 @@ function Test-TcpPort([string]$HostName, [int]$Port, [int]$TimeoutMs = 3000) {
     try   { $client.ConnectAsync($HostName, $Port).Wait($TimeoutMs) -and $client.Connected }
     catch { $false }
     finally { $client.Dispose() }
+}
+
+function Get-ConnectCommand($Entry) {
+    # One place builds the connect command, used for both the printed hints and -Connect tabs
+    $q = { param($s) "'" + ($s -replace "'", "''") + "'" }   # PowerShell single-quote escaping
+    if ($Entry.Os -eq 'Windows') {
+        $user = if ($WinRmUser) { " -UserName $(& $q $WinRmUser)" } else { '' }
+        "Enter-PSSession -ComputerName $($Entry.PublicIp) -Credential (Get-Credential$user -Message $(& $q "WinRM login for $($Entry.Name)"))"
+    } else {
+        "ssh -i $(& $q $KaliKeyPath) kali@$($Entry.PublicIp)"
+    }
 }
 
 function Write-Step([string]$Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
@@ -199,9 +221,31 @@ $summary | Format-Table -AutoSize | Out-Host
 Write-Host "State written to $StatePath"
 
 foreach ($s in $summary) {
-    if ($s.Os -eq 'Windows') {
-        Write-Host "  $($s.Name):  Enter-PSSession -ComputerName $($s.PublicIp) -Credential (Get-Credential)"
+    Write-Host "  $($s.Name):  $(Get-ConnectCommand $s)"
+}
+
+# --- 6. Optional: one terminal tab per instance -----------------------------
+if ($Connect) {
+    Write-Step 'Opening a terminal per instance'
+    if (-not $IsWindows) {
+        Write-Warning '-Connect opens Windows Terminal tabs and only works on Windows; use the commands above.'
     } else {
-        Write-Host "  $($s.Name):  ssh -i `"$KaliKeyPath`" kali@$($s.PublicIp)"
+        $useWt = [bool](Get-Command wt.exe -ErrorAction SilentlyContinue)
+        if (-not $useWt) { Write-Warning 'Windows Terminal not found; opening separate windows instead.' }
+
+        foreach ($s in $summary) {
+            if (-not $s.Reachable) { Write-Warning "$($s.Name) isn't reachable yet; no terminal opened."; continue }
+
+            # -EncodedCommand sidesteps quoting problems with spaces in the key path or names
+            $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes((Get-ConnectCommand $s)))
+            if ($useWt) {
+                # '-w AWSLab' puts every tab in the same named window
+                Start-Process wt.exe -ArgumentList "-w AWSLab new-tab --title `"$($s.Name)`" pwsh -NoExit -EncodedCommand $encoded"
+                Start-Sleep -Milliseconds 800   # let the window exist before the next tab targets it
+            } else {
+                Start-Process pwsh -ArgumentList "-NoExit -EncodedCommand $encoded"
+            }
+            Write-Host "    opened $($s.Name)"
+        }
     }
 }

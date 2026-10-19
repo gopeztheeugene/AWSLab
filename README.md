@@ -54,6 +54,8 @@ Also after the first run, delete any security group rules you added by hand for 
 ./Start-AwsLab.ps1 -Name '*DC*', Kali       # several, with wildcards
 ./Start-AwsLab.ps1 -Name i-0123456789abcdef # by instance ID
 ./Start-AwsLab.ps1 -ProfileName lab         # use a named AWS profile
+./Start-AwsLab.ps1 -Connect                 # also open a terminal tab per instance
+./Start-AwsLab.ps1 -Connect -WinRmUser 'LAB\Administrator'   # pre-fill the WinRM user name
 ```
 
 `-Name` matches each instance's `Name` tag or instance ID. Matching isn't case-sensitive and accepts wildcards. If nothing matches, the error lists the available names. Both security groups are still updated with your IP, so any instance already running stays reachable.
@@ -68,16 +70,20 @@ Also after the first run, delete any security group rules you added by hand for 
 | `-SecurityGroupIds` | the two lab SGs | Groups used to find instances and to open to your IP |
 | `-TimeoutMinutes` | `15` | Overall limit for instances to start and WinRM to come up |
 | `-StatePath` | `./lab-state.json` | Where the launch state is written |
-| `-KaliKeyPath` | `C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem` | SSH key shown in the Kali connect command |
+| `-KaliKeyPath` | `C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem` | SSH key used in the Kali connect command |
+| `-Connect` | off | Open one terminal tab per reachable instance, already connecting |
+| `-WinRmUser` | *(none)* | User name pre-filled in each Windows tab's credential prompt |
 
 ### Connecting
 
 The summary prints commands like these:
 
 ```powershell
-Enter-PSSession -ComputerName <dc-public-ip> -Credential (Get-Credential)
-ssh -i "C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem" kali@<kali-public-ip>
+Enter-PSSession -ComputerName <dc-public-ip> -Credential (Get-Credential -Message 'WinRM login for AD-DC01')
+ssh -i 'C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem' kali@<kali-public-ip>
 ```
+
+**`-Connect`** runs those commands for you. It opens one tab per reachable instance in a single Windows Terminal window named `AWSLab`, each tab titled with the instance name. Windows tabs open a WinRM session and ask for the login; the Kali tab SSHes in with your key. Tabs stay open after you exit the session, so you can reconnect with the up arrow. Instances that aren't reachable are skipped with a warning. Without Windows Terminal it opens separate PowerShell windows instead; on macOS or Linux it does nothing but print the commands.
 
 WinRM over HTTP to a bare IP needs the target in your laptop's TrustedHosts. This is a one-time setup from an elevated prompt:
 
