@@ -1,8 +1,8 @@
-# Step 4, reset: `Stop-AwsLab.ps1` / `stop-awslab.sh`
+# Step 4, reset: `Reset-LabTopic.ps1` / `reset-labtopic.sh`
 
 Terminates the attacked DC + member pair and cleans up, so the next step 1 run
-rebuilds them clean from the golden AMIs. `Stop-AwsLab.ps1` (PowerShell 7 +
-AWS.Tools.EC2) and `stop-awslab.sh` (bash + AWS CLI v2 + jq) do the same thing.
+rebuilds them clean from the golden AMIs. `Reset-LabTopic.ps1` (PowerShell 7 +
+AWS.Tools.EC2) and `reset-labtopic.sh` (bash + AWS CLI v2 + jq) do the same thing.
 
 No relaunch here. Bringing the lab back is step 1's job (`Start-AwsLab.ps1 -RebuildIfMissing`).
 
@@ -27,17 +27,17 @@ Pull the logs you need with step 3 **before** running this. Without `-PreserveDi
 ## Usage
 
 ```powershell
-./Stop-AwsLab.ps1 -WhatIf                           # show the plan, change nothing
-./Stop-AwsLab.ps1                                   # terminate the pair, stop the rest (asks first)
-./Stop-AwsLab.ps1 -PreserveDisk -Topic kerberoast   # snapshot the attacked disks first
-./Stop-AwsLab.ps1 -Force -ProfileName lab
+./Reset-LabTopic.ps1 -WhatIf                           # show the plan, change nothing
+./Reset-LabTopic.ps1                                   # terminate the pair, stop the rest (asks first)
+./Reset-LabTopic.ps1 -PreserveDisk -Topic kerberoast   # snapshot the attacked disks first
+./Reset-LabTopic.ps1 -Force -ProfileName lab
 ```
 
 ```bash
-./stop-awslab.sh --dry-run
-./stop-awslab.sh                                    # asks you to type 'reset'
-./stop-awslab.sh --preserve-disk --topic kerberoast
-./stop-awslab.sh -y --profile lab
+./reset-labtopic.sh --dry-run
+./reset-labtopic.sh                                    # asks you to type 'reset'
+./reset-labtopic.sh --preserve-disk --topic kerberoast
+./reset-labtopic.sh -y --profile lab
 ```
 
 | PowerShell | bash | Default | Purpose |
