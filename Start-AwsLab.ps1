@@ -312,10 +312,26 @@ $winrmDeadline = (Get-Date).AddMinutes($TimeoutMinutes)
 $pending = @($windows | Where-Object {
     if ($_.PublicIpAddress) { $true } else { Write-Warning "$(Get-InstanceName $_) has no public IP; skipping WinRM check."; $false }
 })
+$gone = @()
 while ($pending) {
     $pending = @($pending | Where-Object {
         if (Test-TcpPort $_.PublicIpAddress 5985) { Write-Host "    $(Get-InstanceName $_)  WinRM up"; $false } else { $true }
     })
+    # A box that stopped or was terminated mid-wait will never answer; drop it now
+    # instead of burning the whole timeout on it.
+    if ($pending) {
+        $live = @{}
+        (Get-EC2Instance -InstanceId $pending.InstanceId @aws).Instances | ForEach-Object { $live[$_.InstanceId] = $_ }
+        $pending = @($pending | Where-Object {
+            $now = $live[$_.InstanceId]
+            if ($now -and "$($now.State.Name)" -eq 'running') { return $true }
+            $state  = if ($now) { "$($now.State.Name)" } else { 'gone' }
+            $reason = if ($now) { "$($now.StateTransitionReason) $($now.StateReason.Message)".Trim() } else { '' }
+            Write-Warning "$(Get-InstanceName $_) ($($_.InstanceId)) is now $state; it won't come up. $reason"
+            $script:gone += $_
+            $false
+        })
+    }
     if (-not $pending -or (Get-Date) -gt $winrmDeadline) { break }
     Start-Sleep -Seconds 10
 }
@@ -343,6 +359,10 @@ foreach ($w in $pending) {
     }
 }
 if ($pending) { Write-Warning "Continuing without WinRM on: $(($pending | ForEach-Object { Get-InstanceName $_ }) -join ', '). Re-run later or raise -TimeoutMinutes." }
+if ($gone) {
+    Write-Warning "Lost during launch: $(($gone | ForEach-Object { Get-InstanceName $_ }) -join ', '). If terminated, rebuild with: ./Start-AwsLab.ps1 -RebuildIfMissing"
+    $instances = Get-LabInstances   # keep vanished boxes out of the summary and state file
+}
 
 # --- 5. Summary and state file ----------------------------------------------
 $summary = foreach ($i in $instances | Sort-Object { -not (Test-IsWindows $_) }, { Get-InstanceName $_ }) {
