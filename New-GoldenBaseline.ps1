@@ -70,7 +70,7 @@ $results = foreach ($t in $targets) {
     $imageId = New-EC2Image -InstanceId $t.InstanceId `
         -Name $name `
         -Description "Clean golden baseline $baselineId for $($t.Role)" `
-        -NoReboot:$NoReboot
+        -NoReboot ([bool]$NoReboot)
 
     $tags = @(
         @{ Key = 'Name';       Value = $name },
