@@ -75,7 +75,7 @@ try {
         New-Item $RepoDir     -ItemType Directory -Force | Out-Null
         New-Item 'C:\Sysmon'  -ItemType Directory -Force | Out-Null   # guard the repo-script path
         $zip = "$env:TEMP\awslab.zip"
-        Invoke-WebRequest "$RepoUrl/archive/refs/heads/main.zip" -OutFile $zip
+        Invoke-WebRequest "$RepoUrl/archive/refs/heads/main.zip" -OutFile $zip -UseBasicParsing
         Expand-Archive $zip -DestinationPath 'C:\' -Force
         if (Test-Path 'C:\AWSLab-main') { Copy-Item 'C:\AWSLab-main\*' $RepoDir -Recurse -Force }
         & "$RepoDir\sysmon_main.ps1"
