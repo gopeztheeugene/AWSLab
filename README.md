@@ -7,6 +7,7 @@ An AWS lab for practicing Active Directory attacks and investigating them afterw
 | File | What it is |
 |---|---|
 | `Start-AwsLab.ps1` | Step 1 launcher: starts the lab and opens access from your current IP |
+| `Stop-AwsLab.ps1` / `stop-awslab.sh` | Step 4 reset: terminates the attacked DC + member, optional forensic snapshots (see [README-reset.md](README-reset.md)) |
 | `sysmon_config.xml` | Sysmon configuration for the Windows hosts |
 | `sysmon_main.ps1` | Downloads and installs Sysmon with the config above |
 
