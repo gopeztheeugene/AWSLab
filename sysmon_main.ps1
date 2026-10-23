@@ -9,14 +9,14 @@ $zip = "$dest\Sysmon.zip"
 $config_link = "https://raw.githubusercontent.com/gopeztheeugene/AWSLab/refs/heads/main/sysmon_config.xml"
 $sysmon_config = "$dest\sysmon_config.xml" 
 
+New-Item -ItemType Directory -Force -Path $dest | Out-Null
 Set-Location $dest
-New-Item -ItemType Directory -Force -Path $dest
 if ($?){Write-Log "Folder Created"}
 
 #Download sysmon
 while ($true) {
     try {
-    Invoke-WebRequest -Uri "https://download.sysinternals.com/files/Sysmon.zip" -OutFile $zip
+    Invoke-WebRequest -Uri "https://download.sysinternals.com/files/Sysmon.zip" -OutFile $zip -UseBasicParsing
     }
     catch {
      Write-Log "Attempt to download sysmon failed: $($_.Exception.Message)" | Out-File "$dest\sysmon_script.log" -Append
@@ -38,7 +38,7 @@ if($?){
 #Download sysmon config file
 while ($true) {
     try {
-    Invoke-WebRequest -Uri $config_link -OutFile $sysmon_config
+    Invoke-WebRequest -Uri $config_link -OutFile $sysmon_config -UseBasicParsing
     }
     catch {
      Write-Log "Attempt to download sysmon config file failed: $($_.Exception.Message)"
