@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# stop-awslab.sh - step 4 (reset) for the AWS DFIR lab (bash + AWS CLI).
+# reset-labtopic.sh - step 4 (reset) for the AWS DFIR lab (bash + AWS CLI).
 #
-# The Linux counterpart of Stop-AwsLab.ps1. Terminates the attacked DC + member
+# The Linux counterpart of Reset-LabTopic.ps1. Terminates the attacked DC + member
 # pair and cleans up; --preserve-disk EBS-snapshots their volumes first (tagged
 # with topic + date). Kali and the VPN server have no golden AMI, so they're
 # stopped, never terminated. No relaunch here: step 1 rebuilds from the golden
@@ -32,7 +32,7 @@ ASSUME_YES=0
 
 usage() {
     cat <<'USAGE'
-Usage: stop-awslab.sh [options]
+Usage: reset-labtopic.sh [options]
       --preserve-disk         Snapshot the attacked volumes before terminating
       --topic NAME            Attack topic for the snapshot tags (required with --preserve-disk)
       --reset-name NAME[,..]  Boxes to terminate (default: dc,member01)
@@ -63,7 +63,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -n "${BASH_VERSION:-}" ]] || { echo "Run with bash (not sh/ash): bash stop-awslab.sh ..." >&2; exit 1; }
+[[ -n "${BASH_VERSION:-}" ]] || { echo "Run with bash (not sh/ash): bash reset-labtopic.sh ..." >&2; exit 1; }
 command -v aws >/dev/null || { echo "awscli not found. Install AWS CLI v2." >&2; exit 1; }
 command -v jq  >/dev/null || { echo "jq not found. Install jq." >&2; exit 1; }
 if [[ "$PRESERVE" -eq 1 && -z "$TOPIC" ]]; then

@@ -21,13 +21,13 @@
     No relaunch here: bringing the lab back is step 1's job.
 
 .EXAMPLE
-    ./Stop-AwsLab.ps1 -WhatIf
+    ./Reset-LabTopic.ps1 -WhatIf
     Show what would be snapshotted, terminated and stopped; change nothing.
 .EXAMPLE
-    ./Stop-AwsLab.ps1
+    ./Reset-LabTopic.ps1
     Terminate dc + member01 (asks to confirm), stop the rest, clean up.
 .EXAMPLE
-    ./Stop-AwsLab.ps1 -PreserveDisk -Topic kerberoast
+    ./Reset-LabTopic.ps1 -PreserveDisk -Topic kerberoast
     Snapshot the attacked disks first, tagged Topic=kerberoast, then terminate.
 
 .PARAMETER PreserveDisk
