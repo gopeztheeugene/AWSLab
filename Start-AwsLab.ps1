@@ -33,6 +33,14 @@
     Windows hosts, SSH for Kali. Uses Windows Terminal if installed, otherwise separate windows.
 .PARAMETER WinRmUser
     Optional. Pre-fills the user name in each Windows tab's credential prompt.
+.PARAMETER ShareHostName
+    Name tag of the member server that hosts the log share. Default 'srv01'. Wildcards allowed.
+.PARAMETER ShareDrive
+    Drive letter to map the log share to on this laptop. Default 'L:'.
+.PARAMETER ShareCredential
+    Optional. Credential for the log share; prompts once if omitted.
+.PARAMETER NoMountShare
+    Skip mounting the log share.
 #>
 [CmdletBinding()]
 param(
@@ -44,7 +52,11 @@ param(
     [string]   $StatePath        = (Join-Path $PSScriptRoot 'lab-state.json'),
     [string]   $KaliKeyPath      = 'C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem',
     [switch]   $Connect,
-    [string]   $WinRmUser
+    [string]   $WinRmUser,
+    [string]        $ShareHostName   = 'srv01',
+    [string]        $ShareDrive      = 'L:',
+    [pscredential]  $ShareCredential,
+    [switch]        $NoMountShare
 )
 
 $ErrorActionPreference = 'Stop'
@@ -224,7 +236,37 @@ foreach ($s in $summary) {
     Write-Host "  $($s.Name):  $(Get-ConnectCommand $s)"
 }
 
-# --- 6. Optional: one terminal tab per instance -----------------------------
+# --- 6. Mount the member server's log share on this laptop ------------------
+if (-not $NoMountShare) {
+    $shareHost = @($summary | Where-Object { $_.Name -like $ShareHostName })[0]
+    if (-not $shareHost) {
+        Write-Warning "Share host '$ShareHostName' not among the started instances; skipping mount."
+    } elseif (-not $shareHost.Reachable) {
+        Write-Warning "$($shareHost.Name) isn't reachable; skipping share mount."
+    } else {
+        $remote = "\\$($shareHost.PublicIp)\LabLogs"
+        Write-Step "Mounting $remote on $ShareDrive"
+        # Public IP changes every launch, so clear only THIS drive's stale mapping.
+        # Shares mapped to other drive letters are left untouched.
+        Get-SmbMapping -LocalPath $ShareDrive -ErrorAction SilentlyContinue |
+            Remove-SmbMapping -Force -ErrorAction SilentlyContinue
+        if (-not $ShareCredential) {
+            $ShareCredential = Get-Credential -Message "Log share login for $($shareHost.Name) (e.g. LAB\Administrator)"
+        }
+        try {
+            New-SmbMapping -LocalPath $ShareDrive -RemotePath $remote `
+                -UserName $ShareCredential.UserName `
+                -Password $ShareCredential.GetNetworkCredential().Password `
+                -Persistent $false | Out-Null
+            Write-Host "    mounted $remote -> $ShareDrive"
+        } catch {
+            Write-Warning "Couldn't mount $remote : $_"
+            Write-Warning "If that timed out, your ISP may block outbound SMB (445); logs can still be pulled over WinRM (5985)."
+        }
+    }
+}
+
+# --- 7. Optional: one terminal tab per instance -----------------------------
 if ($Connect) {
     Write-Step 'Opening a terminal per instance'
     if (-not $IsWindows) {
