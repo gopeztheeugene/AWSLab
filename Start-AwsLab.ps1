@@ -187,8 +187,20 @@ foreach ($sg in $SecurityGroupIds) {
         $perm.Ipv4Ranges = [System.Collections.Generic.List[Amazon.EC2.Model.IpRange]]::new()
         $perm.Ipv4Ranges.Add($range)
 
-        Grant-EC2SecurityGroupIngress -GroupId $sg -IpPermission $perm @aws | Out-Null
-        Write-Host "    $sg  allowed all traffic from $cidr"
+        try {
+            Grant-EC2SecurityGroupIngress -GroupId $sg -IpPermission $perm @aws | Out-Null
+            Write-Host "    $sg  allowed all traffic from $cidr"
+        } catch {
+            # AWS dedupes ingress rules by content, not description, so a hand-made
+            # rule already allowing this IP makes our tagged add a duplicate. The IP
+            # is already allowed, so treat that as success instead of halting the run.
+            if ("$($_.Exception.Message)" -match 'already exists' -or
+                "$($_.Exception.ErrorCode)" -eq 'InvalidPermission.Duplicate') {
+                Write-Host "    $sg  already allows $cidr (existing untagged rule)"
+            } else {
+                throw
+            }
+        }
     }
 }
 
