@@ -71,7 +71,7 @@ Also after the first run, delete any security group rules you added by hand for 
 | `-Region` | `ap-southeast-2` | AWS region |
 | `-ProfileName` | *(default credentials)* | AWS credential profile |
 | `-SecurityGroupIds` | the two lab SGs | Groups used to find instances and to open to your IP |
-| `-TimeoutMinutes` | `15` | Overall limit for instances to start and WinRM to come up |
+| `-TimeoutMinutes` | `15` | Limit for instances to start, then a fresh limit for WinRM to come up. A host still without WinRM is reported (EC2 status checks, RDP probe, last console lines) and the launch carries on |
 | `-StatePath` | `./lab-state.json` | Where the launch state is written |
 | `-KaliKeyPath` | `C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem` | SSH key used in the Kali connect command |
 | `-Connect` | off | Open one terminal tab per reachable instance, already connecting |

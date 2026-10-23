@@ -48,7 +48,7 @@ param(
     [string]   $Region           = 'ap-southeast-2',
     [string]   $ProfileName,
     [string[]] $SecurityGroupIds = @('sg-02df021a36003f4f1', 'sg-0549668744af8e82d'),
-    [int]      $TimeoutMinutes   = 15,
+    [int]      $TimeoutMinutes   = 15,   # per phase: instance start, then WinRM
     [string]   $StatePath        = (Join-Path $PSScriptRoot 'lab-state.json'),
     [string]   $KaliKeyPath      = 'C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem',
     [switch]   $Connect,
@@ -209,14 +209,43 @@ Write-Step 'Waiting for WinRM (5985) on Windows hosts'
 $instances = Get-LabInstances   # refresh: public IPs change on every start
 $windows   = @($instances | Where-Object { Test-IsWindows $_ })
 
-foreach ($w in $windows) {
-    if (-not $w.PublicIpAddress) { Write-Warning "$(Get-InstanceName $w) has no public IP; skipping WinRM check."; continue }
-    while (-not (Test-TcpPort $w.PublicIpAddress 5985)) {
-        Assert-NotTimedOut "WinRM on $(Get-InstanceName $w)"
-        Start-Sleep -Seconds 10
-    }
-    Write-Host "    $(Get-InstanceName $w)  WinRM up"
+# Fresh budget for this step, so a slow instance start doesn't eat the WinRM wait.
+# Poll every host each pass (not one after another) and report as each comes up.
+$winrmDeadline = (Get-Date).AddMinutes($TimeoutMinutes)
+$pending = @($windows | Where-Object {
+    if ($_.PublicIpAddress) { $true } else { Write-Warning "$(Get-InstanceName $_) has no public IP; skipping WinRM check."; $false }
+})
+while ($pending) {
+    $pending = @($pending | Where-Object {
+        if (Test-TcpPort $_.PublicIpAddress 5985) { Write-Host "    $(Get-InstanceName $_)  WinRM up"; $false } else { $true }
+    })
+    if (-not $pending -or (Get-Date) -gt $winrmDeadline) { break }
+    Start-Sleep -Seconds 10
 }
+
+# Don't abort the whole launch on one stuck box: say why it looks stuck, then carry on
+# so the summary, state file and the other hosts still work.
+foreach ($w in $pending) {
+    $n = Get-InstanceName $w
+    Write-Warning "$n : no WinRM on $($w.PublicIpAddress):5985 after $TimeoutMinutes min."
+    try {
+        $st = Get-EC2InstanceStatus -InstanceId $w.InstanceId @aws
+        Write-Host "    $n  EC2 status checks: system=$($st.SystemStatus.Status)  instance=$($st.Status.Status)"
+    } catch { Write-Host "    $n  couldn't read EC2 status checks: $($_.Exception.Message)" }
+    if (Test-TcpPort $w.PublicIpAddress 3389) {
+        Write-Host "    $n  RDP (3389) answers, so Windows is up: WinRM service/listener or its firewall rule is off. RDP in and run: Enable-PSRemoting -Force"
+    } else {
+        Write-Host "    $n  RDP (3389) doesn't answer either: still booting, hung, or the SG/NACL blocks you. Last console lines:"
+        try {
+            $raw = (Get-EC2ConsoleOutput -InstanceId $w.InstanceId @aws).Output
+            if ($raw) {
+                [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($raw)) -split "`r?`n" |
+                    Where-Object { $_.Trim() } | Select-Object -Last 5 | ForEach-Object { Write-Host "        $_" }
+            } else { Write-Host '        (no console output yet)' }
+        } catch { Write-Host "        couldn't read console output: $($_.Exception.Message)" }
+    }
+}
+if ($pending) { Write-Warning "Continuing without WinRM on: $(($pending | ForEach-Object { Get-InstanceName $_ }) -join ', '). Re-run later or raise -TimeoutMinutes." }
 
 # --- 5. Summary and state file ----------------------------------------------
 $summary = foreach ($i in $instances | Sort-Object { -not (Test-IsWindows $_) }, { Get-InstanceName $_ }) {
