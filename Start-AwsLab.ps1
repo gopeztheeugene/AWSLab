@@ -51,6 +51,8 @@
     newest golden AMI (tag Baseline=golden), using the launch settings stored on
     that AMI as Launch* tags. Off by default, so a misconfigured run (wrong
     region/profile/creds) can't silently spawn duplicate instances.
+    The DC is launched first and the rest wait until it passes its status checks,
+    so the member boots onto a working domain network.
 #>
 [CmdletBinding()]
 param(
@@ -133,6 +135,24 @@ function Assert-NotTimedOut([string]$What) {
     if ((Get-Date) -gt $deadline) { throw "Timed out after $TimeoutMinutes min waiting for $What." }
 }
 
+function Wait-RebuiltDc([string]$InstanceId) {
+    # Status checks pass once Windows has booted; the extra minute lets AD DS and
+    # DNS finish starting. On timeout, warn and carry on rather than block the rebuild.
+    Write-Host "    waiting for the rebuilt DC to pass status checks before launching the rest"
+    $until = (Get-Date).AddMinutes($TimeoutMinutes)
+    while ($true) {
+        $st = Get-EC2InstanceStatus -InstanceId $InstanceId @aws
+        if ($st -and "$($st.Status.Status)" -eq 'ok' -and "$($st.SystemStatus.Status)" -eq 'ok') { break }
+        if ((Get-Date) -gt $until) {
+            Write-Warning "Rebuilt DC $InstanceId didn't pass status checks within $TimeoutMinutes min; launching the rest anyway. If a member's WinRM stays down, restart it once the DC is up."
+            return
+        }
+        Start-Sleep -Seconds 15
+    }
+    Start-Sleep -Seconds 60
+    Write-Host '    DC is up'
+}
+
 function Invoke-LabRebuild {
     # Recreate any golden-backed lab box (identified by its LaunchName tag) that
     # isn't currently present -- e.g. the DC/member were terminated by step 4's
@@ -158,20 +178,27 @@ function Invoke-LabRebuild {
         Group-Object { ($_.Tags | Where-Object Key -eq 'LaunchName').Value } |
         ForEach-Object { $_.Group | Sort-Object CreationDate -Descending | Select-Object -First 1 }
 
-    # Rebuild the DC first so it's up before the member re-establishes its secure channel.
+    # Rebuild the DC first, and wait for it, so it's up before the member boots and
+    # re-establishes its secure channel.
     $order  = @{ dc = 0 }
     $newest = $newest | Sort-Object {
         $n = ($_.Tags | Where-Object Key -eq 'LaunchName').Value
         if ($order.ContainsKey($n)) { $order[$n] } else { 9 }
     }
 
-    $launchedAny = $false
+    $launchedAny  = $false
+    $dcLaunchedId = $null
     foreach ($ami in $newest) {
         $tag = @{}
         $ami.Tags | ForEach-Object { $tag[$_.Key] = $_.Value }
         $boxName = $tag['LaunchName']
 
         if ($LiveNames -contains $boxName) { continue }   # already present; don't duplicate
+
+        # A member that boots before the DC's AD/DNS is up can't detect its domain
+        # network, falls back to the Public firewall profile and blocks WinRM from
+        # outside the subnet. So hold the rest until the rebuilt DC passes its status checks.
+        if ($dcLaunchedId) { Wait-RebuiltDc $dcLaunchedId; $dcLaunchedId = $null }
 
         foreach ($need in 'LaunchInstanceType', 'LaunchSubnetId', 'LaunchKeyName', 'LaunchSecurityGroupIds') {
             if (-not $tag[$need]) {
@@ -205,6 +232,7 @@ function Invoke-LabRebuild {
         $newId = $res.Instances.InstanceId
         New-EC2Tag -Resource $newId -Tag @{ Key = 'Name'; Value = $boxName } @aws
         Write-Host "    launched $boxName -> $newId"
+        if ($order.ContainsKey($boxName)) { $dcLaunchedId = $newId }
         $launchedAny = $true
     }
 
