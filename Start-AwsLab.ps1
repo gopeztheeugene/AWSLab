@@ -500,8 +500,13 @@ if (-not $NoConnect) {
             $listed  = @("$trusted" -split ',' | ForEach-Object Trim)
             $missing = @($winIps | Where-Object { $listed -notcontains '*' -and $listed -notcontains $_ })
             if (-not $svcUp -or $missing) {
+                # Import the WSMan module explicitly: PowerShell doesn't autoload it for a WSMan:
+                # path, so in a fresh -NoProfile process the drive may not exist yet.
                 $fix = "`$ErrorActionPreference = 'Stop'; Start-Service WinRM"
-                if ($missing) { $fix += "; Set-Item WSMan:\localhost\Client\TrustedHosts -Value '$($missing -join ',')' -Concatenate -Force" }
+                if ($missing) {
+                    $newList = (@($listed | Where-Object { $_ }) + $missing) -join ','
+                    $fix += "; Import-Module Microsoft.WSMan.Management; Set-Item WSMan:\localhost\Client\TrustedHosts -Value '$newList' -Force"
+                }
                 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
                 try {
                     if ($isAdmin) {
@@ -513,6 +518,10 @@ if (-not $NoConnect) {
                                 -ArgumentList "-NoProfile -EncodedCommand $enc"
                         if ($p.ExitCode) { throw "elevated setup exited with code $($p.ExitCode)" }
                     }
+                    # Trust but verify: the elevated helper runs hidden, so check its result here.
+                    $after = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WSMAN\Client' -Name trusted_hosts -ErrorAction SilentlyContinue).trusted_hosts
+                    $still = @($missing | Where-Object { @("$after" -split ',' | ForEach-Object Trim) -notcontains $_ })
+                    if ($still) { throw "TrustedHosts still lacks $($still -join ', ')" }
                     Write-Host "    WinRM client ready$(if ($missing) { "; trusted $($missing -join ', ')" })"
                 } catch {
                     Write-Warning "Couldn't set up the WinRM client ($($_.Exception.Message)); the WinRM tabs may fail. From an admin prompt run: $fix"
