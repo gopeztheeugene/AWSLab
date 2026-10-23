@@ -59,8 +59,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-command -v aws >/dev/null || { echo "awscli not found. Install AWS CLI v2." >&2; exit 1; }
-command -v jq  >/dev/null || { echo "jq not found. Install jq." >&2; exit 1; }
+[[ -n "${BASH_VERSION:-}" ]] || { echo "Run with bash (not sh/ash): bash start-awslab.sh ..." >&2; exit 1; }
+command -v aws  >/dev/null || { echo "awscli not found. Install AWS CLI v2." >&2; exit 1; }
+command -v jq   >/dev/null || { echo "jq not found. Install jq." >&2; exit 1; }
+command -v curl >/dev/null || { echo "curl not found. Install curl." >&2; exit 1; }
 
 AWS=(aws --region "$REGION" --output json)
 [[ -n "$PROFILE" ]] && AWS+=(--profile "$PROFILE")

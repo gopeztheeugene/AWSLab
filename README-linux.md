@@ -8,10 +8,19 @@ membership and only touches rules it tagged `AWSLab-launcher`.
 
 ## Prerequisites
 
+Install `jq`, `curl`, and (for `--mount`) `cifs-utils` with your distro's package
+manager:
+
 ```bash
-# AWS CLI v2 + helpers
-sudo apt install -y jq curl cifs-utils      # cifs-utils only needed for --mount
-# install awscli v2 per AWS docs, then configure creds:
+sudo apt install  -y jq curl cifs-utils     # Debian / Ubuntu / Mint / Pop!_OS
+sudo dnf install  -y jq curl cifs-utils     # Fedora / RHEL / Rocky / Alma
+sudo pacman -S --needed jq curl cifs-utils  # Arch / Manjaro
+sudo zypper install jq curl cifs-utils      # openSUSE
+```
+
+Then install **AWS CLI v2** per AWS's docs and configure credentials:
+
+```bash
 aws configure                                # or SSO; region ap-southeast-2
 ```
 
@@ -45,9 +54,14 @@ The mount uses CIFS and needs two one-time things:
    ```
 2. **Permission to mount.** `mount -t cifs` needs root, so the script calls `sudo`.
    For a hands-free / Claude-launched run (no password prompt), allow just the
-   mount and umount without a password — `sudo visudo` and add:
+   mount and umount without a password. The `mount.cifs` path differs by distro,
+   so find yours first, then add a matching `sudo visudo` rule:
+   ```bash
+   command -v mount.cifs umount
+   #  Debian/Ubuntu: /sbin/mount.cifs   Fedora: /usr/sbin/mount.cifs   Arch: /usr/bin/mount.cifs
    ```
-   youruser ALL=(root) NOPASSWD: /usr/bin/mount.cifs, /usr/bin/umount
+   ```
+   youruser ALL=(root) NOPASSWD: /sbin/mount.cifs, /usr/bin/umount   # use YOUR paths
    ```
    Or simply run with `--no-mount` and mount by hand when you sit down.
 
@@ -68,6 +82,18 @@ Claude runs the launcher for you through the machine's shell:
 This is the Linux half of the `lab` skill — "start the lab" on the mini PC runs
 this; the Windows work laptop runs `Start-AwsLab.ps1` from its own local shortcut.
 The mini PC must be awake, online, and running the Claude desktop app.
+
+## Distro portability
+
+The script's logic is distro-agnostic — `aws`, `jq`, `curl` and `mount.cifs`
+behave the same everywhere. Only two things vary: the package-install command
+above, and the `mount.cifs` path in the sudoers rule. Works on any mainstream
+glibc distro (Ubuntu/Debian, Fedora/RHEL/Rocky, Arch, openSUSE, Mint, Pop!_OS).
+
+It needs **bash** (not `sh`/`dash`) plus GNU coreutils, which it relies on for
+`mapfile`, `/dev/tcp`, `readlink -f`, `timeout` and `date -Iseconds`. On
+**Alpine / busybox** systems those aren't the defaults, so install `bash` and
+`coreutils` first and invoke it as `bash start-awslab.sh ...`.
 
 ## Notes
 
