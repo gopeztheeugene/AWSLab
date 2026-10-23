@@ -23,8 +23,12 @@
     Starts only the instances whose Name tag (or instance ID) matches. Wildcards work: -Name '*DC*'.
 
 .EXAMPLE
-    ./Start-AwsLab.ps1 -Connect -WinRmUser 'LAB\Administrator'
-    After launch, opens one Windows Terminal tab per reachable instance, already connecting.
+    ./Start-AwsLab.ps1 -WinRmUser 'LAB\Administrator'
+    After launch, opens one Windows Terminal tab per reachable instance, already connecting,
+    with the WinRM user name pre-filled.
+.EXAMPLE
+    ./Start-AwsLab.ps1 -NoConnect
+    Launch only; print the connect commands but open no tabs.
 
 .EXAMPLE
     ./Start-AwsLab.ps1 -RebuildIfMissing
@@ -33,9 +37,12 @@
 
 .PARAMETER Name
     Optional. Name tags or instance IDs to start; wildcards allowed. Omit to start every lab instance.
+.PARAMETER NoConnect
+    Don't open terminal tabs. By default (Windows only) the script opens one tab per reachable
+    instance: WinRM session for Windows hosts, SSH for Kali. Uses Windows Terminal if installed,
+    otherwise separate windows.
 .PARAMETER Connect
-    Optional. Open a terminal tab per reachable instance (Windows only): WinRM session for
-    Windows hosts, SSH for Kali. Uses Windows Terminal if installed, otherwise separate windows.
+    Kept so older commands still work; tabs now open by default.
 .PARAMETER WinRmUser
     Optional. Pre-fills the user name in each Windows tab's credential prompt.
 .PARAMETER ShareHostName
@@ -64,7 +71,8 @@ param(
     [string]   $StatePath        = (Join-Path $PSScriptRoot 'lab-state.json'),
     [string]   $KaliKeyPath      = 'C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem',
     [switch]   $RebuildIfMissing,
-    [switch]   $Connect,
+    [switch]   $NoConnect,
+    [switch]   $Connect,   # legacy: tabs are now the default
     [string]   $WinRmUser,
     [string]        $ShareHostName   = 'member01',
     [string]        $ShareDrive      = 'L:',
@@ -118,7 +126,7 @@ function Test-TcpPort([string]$HostName, [int]$Port, [int]$TimeoutMs = 3000) {
 }
 
 function Get-ConnectCommand($Entry) {
-    # One place builds the connect command, used for both the printed hints and -Connect tabs
+    # One place builds the connect command, used for both the printed hints and the terminal tabs
     $q = { param($s) "'" + ($s -replace "'", "''") + "'" }   # PowerShell single-quote escaping
     if ($Entry.Os -eq 'Windows') {
         $user = if ($WinRmUser) { " -UserName $(& $q $WinRmUser)" } else { '' }
@@ -452,11 +460,11 @@ if (-not $NoMountShare) {
     }
 }
 
-# --- 7. Optional: one terminal tab per instance -----------------------------
-if ($Connect) {
+# --- 7. One terminal tab per instance (skip with -NoConnect) ----------------
+if (-not $NoConnect) {
     Write-Step 'Opening a terminal per instance'
     if (-not $IsWindows) {
-        Write-Warning '-Connect opens Windows Terminal tabs and only works on Windows; use the commands above.'
+        Write-Host '    terminal tabs are Windows-only; use the commands above'
     } else {
         $useWt = [bool](Get-Command wt.exe -ErrorAction SilentlyContinue)
         if (-not $useWt) { Write-Warning 'Windows Terminal not found; opening separate windows instead.' }

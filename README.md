@@ -54,8 +54,8 @@ Also after the first run, delete any security group rules you added by hand for 
 ./Start-AwsLab.ps1 -Name '*DC*', Kali       # several, with wildcards
 ./Start-AwsLab.ps1 -Name i-0123456789abcdef # by instance ID
 ./Start-AwsLab.ps1 -ProfileName lab         # use a named AWS profile
-./Start-AwsLab.ps1 -Connect                 # also open a terminal tab per instance
-./Start-AwsLab.ps1 -Connect -WinRmUser 'LAB\Administrator'   # pre-fill the WinRM user name
+./Start-AwsLab.ps1 -NoConnect               # launch only; don't open terminal tabs
+./Start-AwsLab.ps1 -WinRmUser 'LAB\Administrator'   # pre-fill the WinRM user name in the tabs
 ./Start-AwsLab.ps1 -Name dc, member01, kali # start just these three
 ./Start-AwsLab.ps1 -NoMountShare            # start the lab but don't map the log share
 ```
@@ -73,7 +73,7 @@ Also after the first run, delete any security group rules you added by hand for 
 | `-TimeoutMinutes` | `15` | Limit for instances to start, then a fresh limit for WinRM to come up. A host still without WinRM is reported (EC2 status checks, RDP probe, last console lines) and the launch carries on |
 | `-StatePath` | `./lab-state.json` | Where the launch state is written |
 | `-KaliKeyPath` | `C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem` | SSH key used in the Kali connect command |
-| `-Connect` | off | Open one terminal tab per reachable instance, already connecting |
+| `-NoConnect` | off | Don't open the terminal tabs (by default one opens per reachable instance, already connecting) |
 | `-WinRmUser` | *(none)* | User name pre-filled in each Windows tab's credential prompt |
 | `-ShareHostName` | `member01` | Name tag of the member server hosting the log share; wildcards allowed |
 | `-ShareDrive` | `L:` | Drive letter the log share is mapped to on this laptop |
@@ -89,7 +89,7 @@ Enter-PSSession -ComputerName <dc-public-ip> -Credential (Get-Credential -Messag
 ssh -i 'C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem' kali@<kali-public-ip>
 ```
 
-**`-Connect`** runs those commands for you. It opens one tab per reachable instance in a single Windows Terminal window named `AWSLab`, each tab titled with the instance name. Windows tabs open a WinRM session and ask for the login; the Kali tab SSHes in with your key. Tabs stay open after you exit the session, so you can reconnect with the up arrow. Instances that aren't reachable are skipped with a warning. Without Windows Terminal it opens separate PowerShell windows instead; on macOS or Linux it does nothing but print the commands.
+By default the script runs those commands for you (skip with **`-NoConnect`**). It opens one tab per reachable instance in a single Windows Terminal window named `AWSLab`, each tab titled with the instance name. Windows tabs open a WinRM session and ask for the login; the Kali tab SSHes in with your key. Tabs stay open after you exit the session, so you can reconnect with the up arrow. Instances that aren't reachable are skipped with a warning. Without Windows Terminal it opens separate PowerShell windows instead; on macOS or Linux it does nothing but print the commands.
 
 WinRM over HTTP to a bare IP needs the target in your laptop's TrustedHosts. This is a one-time setup from an elevated prompt:
 
