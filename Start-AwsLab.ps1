@@ -146,18 +146,25 @@ function Assert-NotTimedOut([string]$What) {
 function Wait-RebuiltDc([string]$InstanceId) {
     # Status checks pass once Windows has booted; the extra minute lets AD DS and
     # DNS finish starting. On timeout, warn and carry on rather than block the rebuild.
-    Write-Host "    waiting for the rebuilt DC to pass status checks before launching the rest"
-    $until = (Get-Date).AddMinutes($TimeoutMinutes)
+    Write-Host "    waiting for the DC ($InstanceId) to pass status checks before launching the rest"
+    $until  = (Get-Date).AddMinutes($TimeoutMinutes)
+    $waited = $false
     while ($true) {
-        $st = Get-EC2InstanceStatus -InstanceId $InstanceId @aws
+        try {
+            $st = Get-EC2InstanceStatus -InstanceId $InstanceId @aws
+        } catch {
+            # A just-launched ID can take a few seconds to show up (EC2 is eventually consistent).
+            if ("$($_.Exception.Message)" -match 'does not exist' -or "$($_.Exception.ErrorCode)" -eq 'InvalidInstanceID.NotFound') { $st = $null } else { throw }
+        }
         if ($st -and "$($st.Status.Status)" -eq 'ok' -and "$($st.SystemStatus.Status)" -eq 'ok') { break }
+        $waited = $true
         if ((Get-Date) -gt $until) {
             Write-Warning "Rebuilt DC $InstanceId didn't pass status checks within $TimeoutMinutes min; launching the rest anyway. If a member's WinRM stays down, restart it once the DC is up."
             return
         }
         Start-Sleep -Seconds 15
     }
-    Start-Sleep -Seconds 60
+    if ($waited) { Start-Sleep -Seconds 60 }   # only a fresh boot needs AD DS/DNS settle time
     Write-Host '    DC is up'
 }
 
@@ -196,6 +203,7 @@ function Invoke-LabRebuild {
 
     $launchedAny  = $false
     $dcLaunchedId = $null
+    $dcWaited     = $false
     foreach ($ami in $newest) {
         $tag = @{}
         $ami.Tags | ForEach-Object { $tag[$_.Key] = $_.Value }
@@ -206,7 +214,17 @@ function Invoke-LabRebuild {
         # A member that boots before the DC's AD/DNS is up can't detect its domain
         # network, falls back to the Public firewall profile and blocks WinRM from
         # outside the subnet. So hold the rest until the rebuilt DC passes its status checks.
-        if ($dcLaunchedId) { Wait-RebuiltDc $dcLaunchedId; $dcLaunchedId = $null }
+        # The DC may be from this run or an earlier one that stopped partway; wait on it if it's booting.
+        if (-not $order.ContainsKey($boxName) -and -not $dcWaited) {
+            $dcId = $dcLaunchedId
+            if (-not $dcId) {
+                $dcId = @(Get-LabInstances -All | Where-Object {
+                    $order.ContainsKey((Get-InstanceName $_)) -and "$($_.State.Name)" -in 'pending', 'running'
+                })[0].InstanceId
+            }
+            if ($dcId) { Wait-RebuiltDc $dcId }
+            $dcWaited = $true
+        }
 
         foreach ($need in 'LaunchInstanceType', 'LaunchSubnetId', 'LaunchKeyName', 'LaunchSecurityGroupIds') {
             if (-not $tag[$need]) {
@@ -228,8 +246,14 @@ function Invoke-LabRebuild {
         if ($tag['LaunchPrivateIp'])     { $runParams.PrivateIpAddress    = $tag['LaunchPrivateIp'] }
         if ($tag['LaunchIamProfileArn']) { $runParams.InstanceProfile_Arn = $tag['LaunchIamProfileArn'] }
 
+        # Tag at launch: a separate tag call right after launch can hit "instance does not exist".
+        $nameTag = [Amazon.EC2.Model.TagSpecification]::new()
+        $nameTag.ResourceType = 'instance'
+        $nameTag.Tags = [System.Collections.Generic.List[Amazon.EC2.Model.Tag]]::new()
+        $nameTag.Tags.Add([Amazon.EC2.Model.Tag]::new('Name', $boxName))
+
         try {
-            $res = New-EC2Instance @runParams @aws
+            $res = New-EC2Instance @runParams -TagSpecification $nameTag @aws
         } catch {
             if ("$($_.Exception.Message)" -match 'in use' -or "$($_.Exception.ErrorCode)" -match 'InUse') {
                 throw "Private IP $($tag['LaunchPrivateIp']) for '$boxName' is still in use -- a just-terminated instance may not have released it yet. Wait ~1 min and re-run."
@@ -238,7 +262,6 @@ function Invoke-LabRebuild {
         }
 
         $newId = $res.Instances.InstanceId
-        New-EC2Tag -Resource $newId -Tag @{ Key = 'Name'; Value = $boxName } @aws
         Write-Host "    launched $boxName -> $newId"
         if ($order.ContainsKey($boxName)) { $dcLaunchedId = $newId }
         $launchedAny = $true
