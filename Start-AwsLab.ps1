@@ -34,7 +34,7 @@
 .PARAMETER WinRmUser
     Optional. Pre-fills the user name in each Windows tab's credential prompt.
 .PARAMETER ShareHostName
-    Name tag of the member server that hosts the log share. Default 'srv01'. Wildcards allowed.
+    Name tag of the member server that hosts the log share. Default 'member01'. Wildcards allowed.
 .PARAMETER ShareDrive
     Drive letter to map the log share to on this laptop. Default 'L:'.
 .PARAMETER ShareCredential
@@ -53,7 +53,7 @@ param(
     [string]   $KaliKeyPath      = 'C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem',
     [switch]   $Connect,
     [string]   $WinRmUser,
-    [string]        $ShareHostName   = 'srv01',
+    [string]        $ShareHostName   = 'member01',
     [string]        $ShareDrive      = 'L:',
     [pscredential]  $ShareCredential,
     [switch]        $NoMountShare

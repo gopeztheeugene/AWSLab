@@ -56,7 +56,7 @@ Also after the first run, delete any security group rules you added by hand for 
 ./Start-AwsLab.ps1 -ProfileName lab         # use a named AWS profile
 ./Start-AwsLab.ps1 -Connect                 # also open a terminal tab per instance
 ./Start-AwsLab.ps1 -Connect -WinRmUser 'LAB\Administrator'   # pre-fill the WinRM user name
-./Start-AwsLab.ps1 -Name domain_contoller, srv01, kalilinux  # start just these three
+./Start-AwsLab.ps1 -Name dc, member01, kali # start just these three
 ./Start-AwsLab.ps1 -NoMountShare            # start the lab but don't map the log share
 ```
 
@@ -75,7 +75,7 @@ Also after the first run, delete any security group rules you added by hand for 
 | `-KaliKeyPath` | `C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem` | SSH key used in the Kali connect command |
 | `-Connect` | off | Open one terminal tab per reachable instance, already connecting |
 | `-WinRmUser` | *(none)* | User name pre-filled in each Windows tab's credential prompt |
-| `-ShareHostName` | `srv01` | Name tag of the member server hosting the log share; wildcards allowed |
+| `-ShareHostName` | `member01` | Name tag of the member server hosting the log share; wildcards allowed |
 | `-ShareDrive` | `L:` | Drive letter the log share is mapped to on this laptop |
 | `-ShareCredential` | *(prompts)* | Credential for the log share; prompts once if omitted |
 | `-NoMountShare` | off | Skip mounting the log share |
@@ -103,7 +103,7 @@ Because the lab's public IPs change on every start, `'*'` saves updating the lis
 ### Log share mount
 
 After launch, the script maps the member server's `LabLogs` share to a drive on your
-laptop (default `L:`, member found by the `-ShareHostName` tag, default `srv01`). It's on
+laptop (default `L:`, member found by the `-ShareHostName` tag, default `member01`). It's on
 by default; pass `-NoMountShare` to skip it.
 
 Because the member server's public IP changes on every launch, the script first clears any
