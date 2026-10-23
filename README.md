@@ -110,7 +110,8 @@ by default; pass `-NoMountShare` to skip it.
 Because the member server's public IP changes on every launch, the script first clears any
 mapping on that one drive letter, then re-maps it — so a stale mapping from last session
 can't get in the way. **Only that drive letter is touched; shares you've mapped to other
-letters are left alone.** Give `-ShareCredential` to avoid the one-time login prompt.
+letters are left alone.** If the drive is already mapped to the same share and still answering (member01 kept its IP),
+it's left as is and you aren't asked for credentials. Give `-ShareCredential` to avoid the one-time login prompt.
 
 > This mounts SMB (445) over the public internet. Your SG only admits your own IP, but many
 > ISPs block outbound 445 — if the mount times out, that's usually why, and it's only the

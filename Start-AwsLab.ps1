@@ -463,22 +463,32 @@ if (-not $NoMountShare) {
     } else {
         $remote = "\\$($shareHost.PublicIp)\LabLogs"
         Write-Step "Mounting $remote on $ShareDrive"
-        # Public IP changes every launch, so clear only THIS drive's stale mapping.
-        # Shares mapped to other drive letters are left untouched.
-        Get-SmbMapping -LocalPath $ShareDrive -ErrorAction SilentlyContinue |
-            Remove-SmbMapping -Force -ErrorAction SilentlyContinue
-        if (-not $ShareCredential) {
-            $ShareCredential = Get-Credential -Message "Log share login for $($shareHost.Name) (e.g. LAB\Administrator)"
-        }
-        try {
-            New-SmbMapping -LocalPath $ShareDrive -RemotePath $remote `
-                -UserName $ShareCredential.UserName `
-                -Password $ShareCredential.GetNetworkCredential().Password `
-                -Persistent $false | Out-Null
-            Write-Host "    mounted $remote -> $ShareDrive"
-        } catch {
-            Write-Warning "Couldn't mount $remote : $_"
-            Write-Warning "If that timed out, your ISP may block outbound SMB (445); logs can still be pulled over WinRM (5985)."
+
+        # Already mapped to this same share (member01 kept its IP, e.g. it was already
+        # running) and still answering? Keep it, and don't ask for credentials again.
+        $existing = Get-SmbMapping -LocalPath $ShareDrive -ErrorAction SilentlyContinue
+        $live = $existing -and $existing.RemotePath -eq $remote -and "$($existing.Status)" -eq 'OK' -and
+                (Test-Path "$ShareDrive\" -ErrorAction SilentlyContinue)
+
+        if ($live) {
+            Write-Host "    already mounted; leaving it"
+        } else {
+            # Public IP changes every launch, so clear only THIS drive's stale mapping.
+            # Shares mapped to other drive letters are left untouched.
+            if ($existing) { $existing | Remove-SmbMapping -Force -ErrorAction SilentlyContinue }
+            if (-not $ShareCredential) {
+                $ShareCredential = Get-Credential -Message "Log share login for $($shareHost.Name) (e.g. LAB\Administrator)"
+            }
+            try {
+                New-SmbMapping -LocalPath $ShareDrive -RemotePath $remote `
+                    -UserName $ShareCredential.UserName `
+                    -Password $ShareCredential.GetNetworkCredential().Password `
+                    -Persistent $false | Out-Null
+                Write-Host "    mounted $remote -> $ShareDrive"
+            } catch {
+                Write-Warning "Couldn't mount $remote : $_"
+                Write-Warning "If that timed out, your ISP may block outbound SMB (445); logs can still be pulled over WinRM (5985)."
+            }
         }
     }
 }
