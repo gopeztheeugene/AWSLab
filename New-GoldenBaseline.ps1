@@ -17,11 +17,13 @@
 
 [CmdletBinding()]
 param(
-    [string]$Region  = 'us-east-1',
+    [string]$Region  = 'ap-southeast-2',   # the lab lives in Sydney
     [string]$Project = 'AWSLab',
 
-    # Supply the clean DC + member instance IDs, OR leave blank to discover
-    # them by tag (Project + Role). Discovery expects exactly one of each.
+    # Discovery is by the instances' Name tag (standardized to dc / member01).
+    # Override the names here, or pass instance IDs directly to skip discovery.
+    [string]$DcName          = 'dc',
+    [string]$MemberName      = 'member01',
     [string]$DcInstanceId,
     [string]$MemberInstanceId,
 
@@ -38,20 +40,19 @@ $baselineId = 'golden-{0:yyyyMMdd-HHmm}' -f (Get-Date)
 Write-Host "Baseline id for this run: $baselineId" -ForegroundColor Cyan
 
 function Resolve-LabInstance {
-    param([string]$Role)
+    param([string]$NameTag)
     $found = (Get-EC2Instance -Filter @(
-        @{ Name = 'tag:Project';          Values = $Project },
-        @{ Name = 'tag:Role';             Values = $Role },
+        @{ Name = 'tag:Name';             Values = $NameTag },
         @{ Name = 'instance-state-name';  Values = @('running','stopped') }
     )).Instances
     if (@($found).Count -ne 1) {
-        throw "Expected exactly 1 '$Role' instance (Project=$Project), found $(@($found).Count). Pass the instance ID explicitly, or fix the Role tags."
+        throw "Expected exactly 1 instance with Name tag '$NameTag', found $(@($found).Count). Pass the instance ID explicitly, or check the Name tag."
     }
     $found.InstanceId
 }
 
-if (-not $DcInstanceId)     { $DcInstanceId     = Resolve-LabInstance -Role 'DC' }
-if (-not $MemberInstanceId) { $MemberInstanceId = Resolve-LabInstance -Role 'Member' }
+if (-not $DcInstanceId)     { $DcInstanceId     = Resolve-LabInstance -NameTag $DcName }
+if (-not $MemberInstanceId) { $MemberInstanceId = Resolve-LabInstance -NameTag $MemberName }
 
 Write-Host "DC    : $DcInstanceId"
 Write-Host "Member: $MemberInstanceId"
