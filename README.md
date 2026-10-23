@@ -56,6 +56,8 @@ Also after the first run, delete any security group rules you added by hand for 
 ./Start-AwsLab.ps1 -ProfileName lab         # use a named AWS profile
 ./Start-AwsLab.ps1 -Connect                 # also open a terminal tab per instance
 ./Start-AwsLab.ps1 -Connect -WinRmUser 'LAB\Administrator'   # pre-fill the WinRM user name
+./Start-AwsLab.ps1 -Name dc, member01, kali # start just these three
+./Start-AwsLab.ps1 -NoMountShare            # start the lab but don't map the log share
 ```
 
 `-Name` matches each instance's `Name` tag or instance ID. Matching isn't case-sensitive and accepts wildcards. If nothing matches, the error lists the available names. Both security groups are still updated with your IP, so any instance already running stays reachable.
@@ -73,6 +75,10 @@ Also after the first run, delete any security group rules you added by hand for 
 | `-KaliKeyPath` | `C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem` | SSH key used in the Kali connect command |
 | `-Connect` | off | Open one terminal tab per reachable instance, already connecting |
 | `-WinRmUser` | *(none)* | User name pre-filled in each Windows tab's credential prompt |
+| `-ShareHostName` | `member01` | Name tag of the member server hosting the log share; wildcards allowed |
+| `-ShareDrive` | `L:` | Drive letter the log share is mapped to on this laptop |
+| `-ShareCredential` | *(prompts)* | Credential for the log share; prompts once if omitted |
+| `-NoMountShare` | off | Skip mounting the log share |
 
 ### Connecting
 
@@ -93,6 +99,21 @@ Set-Item WSMan:\localhost\Client\TrustedHosts -Value '*' -Force   # or list spec
 ```
 
 Because the lab's public IPs change on every start, `'*'` saves updating the list each time. Your security groups only admit your own IP.
+
+### Log share mount
+
+After launch, the script maps the member server's `LabLogs` share to a drive on your
+laptop (default `L:`, member found by the `-ShareHostName` tag, default `member01`). It's on
+by default; pass `-NoMountShare` to skip it.
+
+Because the member server's public IP changes on every launch, the script first clears any
+mapping on that one drive letter, then re-maps it — so a stale mapping from last session
+can't get in the way. **Only that drive letter is touched; shares you've mapped to other
+letters are left alone.** Give `-ShareCredential` to avoid the one-time login prompt.
+
+> This mounts SMB (445) over the public internet. Your SG only admits your own IP, but many
+> ISPs block outbound 445 — if the mount times out, that's usually why, and it's only the
+> convenience mount that's affected. Log collection itself goes over WinRM (5985).
 
 ### `lab-state.json`
 
