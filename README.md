@@ -7,11 +7,12 @@ An AWS lab for practicing Active Directory attacks and investigating them afterw
 | File | What it is |
 |---|---|
 | `Start-AwsLab.ps1` | Step 1 launcher: starts the lab and opens access from your current IP |
+| `Collect-TopicLogs.ps1` | Step 3 log collection: pulls Security/Sysmon/PowerShell logs over WinRM into the share, per `collection/<topic>.psd1` (see [README-collect.md](README-collect.md)) |
 | `Reset-LabTopic.ps1` / `reset-labtopic.sh` | Step 4 reset: terminates the attacked DC + member, optional forensic snapshots (see [README-reset.md](README-reset.md)) |
 | `sysmon_config.xml` | Sysmon configuration for the Windows hosts |
 | `sysmon_main.ps1` | Downloads and installs Sysmon with the config above |
 
-Automation is planned in three steps: **1. launch** (done), **2. per-topic vulnerable setup and audit policy**, **3. log collection** over WinRM.
+Four run steps: **1. launch** (done), **2. per-topic vulnerable setup + audit policy**, **3. log collection** over WinRM (done), **4. reset** (done).
 
 ---
 
