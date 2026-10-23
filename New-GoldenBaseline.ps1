@@ -9,7 +9,7 @@
     it keeps the domain join, SID and computer-account trust intact, which is
     what you want for a domain-joined DC+member pair.
 
-    PREREQ: the lab must be CLEAN right now — member joined, Sysmon installed,
+    PREREQ: the lab must be CLEAN right now -- member joined, Sysmon installed,
     patched, and NOTHING attacked yet. Whatever state these two boxes are in
     is the state every future rebuild starts from.
     --------------------------------------------------------------------------
@@ -110,7 +110,7 @@ $results = foreach ($t in $targets) {
     if ($snapIds.Count) {
         New-EC2Tag -Resource $snapIds -Tag $tags
     } else {
-        Write-Warning "Snapshot IDs for $name weren't populated in time; snapshots left untagged (cosmetic — tag later if wanted)."
+        Write-Warning "Snapshot IDs for $name weren't populated in time; snapshots left untagged (cosmetic -- tag later if wanted)."
     }
 
     [pscustomobject]@{
