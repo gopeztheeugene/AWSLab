@@ -92,7 +92,7 @@ ssh -i 'C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem' kali@<ka
 
 By default the script runs those commands for you (skip with **`-NoConnect`**). It opens one tab per reachable instance in a single Windows Terminal window named `AWSLab`, each tab titled with the instance name. Windows tabs open a WinRM session and ask for the login; the Kali tab SSHes in with your key. Tabs stay open after you exit the session, so you can reconnect with the up arrow. Instances that aren't reachable are skipped with a warning. Without Windows Terminal it opens separate PowerShell windows instead; on macOS or Linux it does nothing but print the commands.
 
-WinRM over HTTP to a bare IP needs the target in your laptop's TrustedHosts. This is a one-time setup from an elevated prompt:
+WinRM over HTTP to a bare IP needs your laptop's WinRM service running and the target in its TrustedHosts. Before opening the tabs, the script checks both and, if anything is missing, fixes just that in an elevated helper (one UAC prompt), adding only the new lab IPs. The tabs themselves stay unelevated, so the `L:` mapping is visible in them. To set it up yourself instead, once, from an elevated prompt:
 
 ```powershell
 Start-Service WinRM

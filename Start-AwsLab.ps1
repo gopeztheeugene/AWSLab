@@ -489,6 +489,37 @@ if (-not $NoConnect) {
     if (-not $IsWindows) {
         Write-Host '    terminal tabs are Windows-only; use the commands above'
     } else {
+        # The WinRM tabs need this laptop's WinRM service running and the hosts' new public
+        # IPs in TrustedHosts; both need admin. Do just that part elevated (one UAC prompt,
+        # only when something is missing) so the tabs and the L: mapping stay unelevated.
+        $winIps = @($summary | Where-Object { $_.Os -eq 'Windows' -and $_.Reachable } | ForEach-Object PublicIp)
+        if ($winIps) {
+            $svcUp   = "$((Get-Service WinRM -ErrorAction SilentlyContinue).Status)" -eq 'Running'
+            # Read TrustedHosts from the registry: the WSMan: drive needs admin and a running service.
+            $trusted = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WSMAN\Client' -Name trusted_hosts -ErrorAction SilentlyContinue).trusted_hosts
+            $listed  = @("$trusted" -split ',' | ForEach-Object Trim)
+            $missing = @($winIps | Where-Object { $listed -notcontains '*' -and $listed -notcontains $_ })
+            if (-not $svcUp -or $missing) {
+                $fix = "`$ErrorActionPreference = 'Stop'; Start-Service WinRM"
+                if ($missing) { $fix += "; Set-Item WSMan:\localhost\Client\TrustedHosts -Value '$($missing -join ',')' -Concatenate -Force" }
+                $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+                try {
+                    if ($isAdmin) {
+                        Invoke-Expression $fix
+                    } else {
+                        Write-Host '    WinRM client setup needs admin; approve the UAC prompt'
+                        $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($fix))
+                        $p = Start-Process (Get-Process -Id $PID).Path -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
+                                -ArgumentList "-NoProfile -EncodedCommand $enc"
+                        if ($p.ExitCode) { throw "elevated setup exited with code $($p.ExitCode)" }
+                    }
+                    Write-Host "    WinRM client ready$(if ($missing) { "; trusted $($missing -join ', ')" })"
+                } catch {
+                    Write-Warning "Couldn't set up the WinRM client ($($_.Exception.Message)); the WinRM tabs may fail. From an admin prompt run: $fix"
+                }
+            }
+        }
+
         $useWt = [bool](Get-Command wt.exe -ErrorAction SilentlyContinue)
         if (-not $useWt) { Write-Warning 'Windows Terminal not found; opening separate windows instead.' }
 
