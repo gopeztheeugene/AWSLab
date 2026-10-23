@@ -26,6 +26,11 @@
     ./Start-AwsLab.ps1 -Connect -WinRmUser 'LAB\Administrator'
     After launch, opens one Windows Terminal tab per reachable instance, already connecting.
 
+.EXAMPLE
+    ./Start-AwsLab.ps1 -RebuildIfMissing
+    If the DC/member were terminated (e.g. by a reset), recreate them from the
+    golden AMIs first, then start the lab as usual.
+
 .PARAMETER Name
     Optional. Name tags or instance IDs to start; wildcards allowed. Omit to start every lab instance.
 .PARAMETER Connect
@@ -41,6 +46,11 @@
     Optional. Credential for the log share; prompts once if omitted.
 .PARAMETER NoMountShare
     Skip mounting the log share.
+.PARAMETER RebuildIfMissing
+    If a golden-backed box (dc / member01) isn't present, recreate it from the
+    newest golden AMI (tag Baseline=golden), using the launch settings stored on
+    that AMI as Launch* tags. Off by default, so a misconfigured run (wrong
+    region/profile/creds) can't silently spawn duplicate instances.
 #>
 [CmdletBinding()]
 param(
@@ -51,6 +61,7 @@ param(
     [int]      $TimeoutMinutes   = 15,
     [string]   $StatePath        = (Join-Path $PSScriptRoot 'lab-state.json'),
     [string]   $KaliKeyPath      = 'C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem',
+    [switch]   $RebuildIfMissing,
     [switch]   $Connect,
     [string]   $WinRmUser,
     [string]        $ShareHostName   = 'member01',
@@ -122,9 +133,95 @@ function Assert-NotTimedOut([string]$What) {
     if ((Get-Date) -gt $deadline) { throw "Timed out after $TimeoutMinutes min waiting for $What." }
 }
 
+function Invoke-LabRebuild {
+    # Recreate any golden-backed lab box (identified by its LaunchName tag) that
+    # isn't currently present -- e.g. the DC/member were terminated by step 4's
+    # reset. Each golden AMI carries its own launch settings as Launch* tags
+    # (written by New-GoldenBaseline.ps1), so this needs nothing hard-coded.
+    # Returns $true if it launched anything.
+    param([string[]] $LiveNames)
+
+    Write-Step 'Checking for golden-backed boxes to rebuild'
+
+    $amis = @(Get-EC2Image -Owner self -Filter @(
+        @{ Name = 'tag:Baseline'; Values = 'golden' }
+        @{ Name = 'state';        Values = 'available' }
+    ) @aws)
+    if (-not $amis) {
+        Write-Warning 'No available golden AMIs (tag Baseline=golden). Capture one with New-GoldenBaseline.ps1 first; nothing to rebuild.'
+        return $false
+    }
+
+    # Keep only the newest AMI per target box (by LaunchName), by creation time.
+    $newest = $amis |
+        Where-Object { ($_.Tags | Where-Object Key -eq 'LaunchName').Value } |
+        Group-Object { ($_.Tags | Where-Object Key -eq 'LaunchName').Value } |
+        ForEach-Object { $_.Group | Sort-Object CreationDate -Descending | Select-Object -First 1 }
+
+    # Rebuild the DC first so it's up before the member re-establishes its secure channel.
+    $order  = @{ dc = 0 }
+    $newest = $newest | Sort-Object {
+        $n = ($_.Tags | Where-Object Key -eq 'LaunchName').Value
+        if ($order.ContainsKey($n)) { $order[$n] } else { 9 }
+    }
+
+    $launchedAny = $false
+    foreach ($ami in $newest) {
+        $tag = @{}
+        $ami.Tags | ForEach-Object { $tag[$_.Key] = $_.Value }
+        $boxName = $tag['LaunchName']
+
+        if ($LiveNames -contains $boxName) { continue }   # already present; don't duplicate
+
+        foreach ($need in 'LaunchInstanceType', 'LaunchSubnetId', 'LaunchKeyName', 'LaunchSecurityGroupIds') {
+            if (-not $tag[$need]) {
+                throw "Golden AMI $($ami.ImageId) for '$boxName' is missing tag '$need'. Re-capture with New-GoldenBaseline.ps1 (or add the tag) before rebuilding."
+            }
+        }
+
+        Write-Host "    rebuilding '$boxName' from $($ami.ImageId)  (type $($tag['LaunchInstanceType']), ip $($tag['LaunchPrivateIp']))"
+
+        $runParams = @{
+            ImageId         = $ami.ImageId
+            InstanceType    = $tag['LaunchInstanceType']
+            SubnetId        = $tag['LaunchSubnetId']
+            KeyName         = $tag['LaunchKeyName']
+            SecurityGroupId = @($tag['LaunchSecurityGroupIds'] -split ',')
+            MinCount        = 1
+            MaxCount        = 1
+        }
+        if ($tag['LaunchPrivateIp'])     { $runParams.PrivateIpAddress    = $tag['LaunchPrivateIp'] }
+        if ($tag['LaunchIamProfileArn']) { $runParams.InstanceProfile_Arn = $tag['LaunchIamProfileArn'] }
+
+        try {
+            $res = New-EC2Instance @runParams @aws
+        } catch {
+            if ("$($_.Exception.Message)" -match 'in use' -or "$($_.Exception.ErrorCode)" -match 'InUse') {
+                throw "Private IP $($tag['LaunchPrivateIp']) for '$boxName' is still in use -- a just-terminated instance may not have released it yet. Wait ~1 min and re-run."
+            }
+            throw
+        }
+
+        $newId = $res.Instances.InstanceId
+        New-EC2Tag -Resource $newId -Tag @{ Key = 'Name'; Value = $boxName } @aws
+        Write-Host "    launched $boxName -> $newId"
+        $launchedAny = $true
+    }
+
+    if (-not $launchedAny) { Write-Host '    nothing missing; all golden-backed boxes already present' }
+    return $launchedAny
+}
+
 # --- 1. Find and start the instances ----------------------------------------
 Write-Step "Finding lab instances in $Region"
 $instances = Get-LabInstances
+if ($RebuildIfMissing) {
+    $liveNames = @($instances | ForEach-Object { Get-InstanceName $_ })
+    if (Invoke-LabRebuild -LiveNames $liveNames) {
+        Start-Sleep -Seconds 5
+        $instances = Get-LabInstances   # re-discover to include the rebuilt boxes
+    }
+}
 if (-not $instances) {
     if ($Name) {
         $names = (Get-LabInstances -All | ForEach-Object { Get-InstanceName $_ }) -join ', '

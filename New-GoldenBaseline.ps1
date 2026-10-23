@@ -63,8 +63,15 @@ $targets = @(
 )
 
 $results = foreach ($t in $targets) {
+    # Read the source instance's launch settings so the AMI is self-describing:
+    # the launcher's rebuild path reads these tags and needs nothing else.
+    $src      = (Get-EC2Instance -InstanceId $t.InstanceId).Instances[0]
+    $srcName  = ($src.Tags | Where-Object Key -eq 'Name').Value
+    $srcSgIds = @($src.SecurityGroups | ForEach-Object { $_.GroupId }) -join ','
+    $srcIam   = $src.IamInstanceProfile.Arn
+
     $name = "$Project-$($t.Role)-$baselineId"
-    Write-Host "`nCreating AMI for $($t.Role) ($($t.InstanceId)) -> $name" -ForegroundColor Green
+    Write-Host "`nCreating AMI for $($t.Role) ($($t.InstanceId), Name=$srcName) -> $name" -ForegroundColor Green
 
     # Reboot-for-consistency unless -NoReboot was passed.
     $imageId = New-EC2Image -InstanceId $t.InstanceId `
@@ -73,31 +80,45 @@ $results = foreach ($t in $targets) {
         -NoReboot ([bool]$NoReboot)
 
     $tags = @(
-        @{ Key = 'Name';       Value = $name },
-        @{ Key = 'Project';    Value = $Project },
-        @{ Key = 'Role';       Value = $t.Role },
-        @{ Key = 'Baseline';   Value = 'golden' },
-        @{ Key = 'BaselineId'; Value = $baselineId }
+        @{ Key = 'Name';                   Value = $name }
+        @{ Key = 'Project';                Value = $Project }
+        @{ Key = 'Role';                   Value = $t.Role }
+        @{ Key = 'Baseline';               Value = 'golden' }
+        @{ Key = 'BaselineId';             Value = $baselineId }
+        # --- launch settings: enough for the launcher to recreate this box ---
+        @{ Key = 'LaunchName';             Value = $srcName }
+        @{ Key = 'LaunchInstanceType';     Value = "$($src.InstanceType)" }
+        @{ Key = 'LaunchSubnetId';         Value = $src.SubnetId }
+        @{ Key = 'LaunchPrivateIp';        Value = $src.PrivateIpAddress }
+        @{ Key = 'LaunchKeyName';          Value = $src.KeyName }
+        @{ Key = 'LaunchSecurityGroupIds'; Value = $srcSgIds }
     )
+    if ($srcIam) { $tags += @{ Key = 'LaunchIamProfileArn'; Value = $srcIam } }
 
     # Tag the AMI.
     New-EC2Tag -Resource $imageId -Tag $tags
 
     # Tag the backing snapshot(s) too, so forensic/cost tooling can see them.
-    # Snapshot IDs appear in the image's block device mapping shortly after
-    # registration; poll briefly until they're populated.
+    # Snapshot IDs appear in the image's block device mapping once registration
+    # progresses; poll (up to ~2 min) until they're populated.
     $snapIds = @()
-    for ($i = 0; $i -lt 10 -and $snapIds.Count -eq 0; $i++) {
-        Start-Sleep -Seconds 3
+    for ($i = 0; $i -lt 20 -and $snapIds.Count -eq 0; $i++) {
+        Start-Sleep -Seconds 6
         $img = Get-EC2Image -ImageId $imageId
         $snapIds = @($img.BlockDeviceMapping.Ebs.SnapshotId | Where-Object { $_ })
     }
-    if ($snapIds.Count) { New-EC2Tag -Resource $snapIds -Tag $tags }
+    if ($snapIds.Count) {
+        New-EC2Tag -Resource $snapIds -Tag $tags
+    } else {
+        Write-Warning "Snapshot IDs for $name weren't populated in time; snapshots left untagged (cosmetic — tag later if wanted)."
+    }
 
     [pscustomobject]@{
-        Role     = $t.Role
-        AmiId    = $imageId
-        Snapshot = ($snapIds -join ',')
+        Role      = $t.Role
+        Name      = $srcName
+        AmiId     = $imageId
+        PrivateIp = $src.PrivateIpAddress
+        Snapshot  = ($snapIds -join ',')
     }
 }
 
@@ -111,6 +132,7 @@ NOTE:
     Check with: Get-EC2Image -Owner self -Filter @{Name='tag:BaselineId';Values='$baselineId'}
   * Both AMIs share BaselineId '$baselineId' -- restore the PAIR together on a
     reset, never one against a drifted partner.
-  * The launcher's rebuild path should look these up by tag
-    (Project=$Project, Role=DC|Member, Baseline=golden, newest BaselineId).
+  * Each AMI carries its launch settings as Launch* tags (LaunchName,
+    LaunchInstanceType, LaunchSubnetId, LaunchPrivateIp, LaunchKeyName,
+    LaunchSecurityGroupIds). Start-AwsLab.ps1 -RebuildIfMissing reads those.
 "@ -ForegroundColor DarkGray
