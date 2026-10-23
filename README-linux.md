@@ -36,7 +36,10 @@ aws configure                                # or SSO; region ap-southeast-2
 
 Options: `-n/--name`, `--region`, `--profile`, `--share-host` (default `member01`),
 `--mount-point` (default `~/lab-logs`), `--cred-file` (default `~/.awslab/share.cred`),
-`--no-mount`, `--timeout` (minutes, default 15), `-h/--help`.
+`--no-mount`, `--timeout` (minutes, default 15; applies to instance start, then afresh to the
+WinRM wait), `-h/--help`. A host still without WinRM is reported (EC2 status checks, an RDP
+probe, last console lines) and the launch carries on; one that stops or is terminated
+mid-wait is dropped straight away.
 
 ## Mounting the log share
 
@@ -68,7 +71,8 @@ The mount uses CIFS and needs two one-time things:
 The mount is **non-fatal**: if it fails (e.g. your ISP blocks outbound SMB/445),
 the launch still completes and log collection still works over WinRM (5985).
 Because the member server's public IP changes each launch, the script unmounts a
-stale mount at the same point before re-mounting.
+stale mount at the same point before re-mounting. If the mount already points at the
+same share and answers, it's left as is (no sudo prompt).
 
 ## Having Claude launch it (mini PC)
 
