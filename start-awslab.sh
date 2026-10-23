@@ -38,7 +38,7 @@ Usage: start-awslab.sh [options]
       --mount-point PATH      Where to mount the share (default: ~/lab-logs)
       --cred-file PATH        CIFS credentials file (default: ~/.awslab/share.cred)
       --no-mount              Don't mount the log share
-      --timeout MINUTES       Overall wait budget (default: 15)
+      --timeout MINUTES       Wait budget per phase: start, then WinRM (default: 15)
   -h, --help                  This help
 USAGE
 }
@@ -185,13 +185,61 @@ done
 step "Waiting for WinRM (5985) on Windows hosts"
 mapfile -t ROWS < <(lab_instances | name_filter)      # refresh: public IPs changed
 tcp_open() { timeout 3 bash -c ">/dev/tcp/$1/$2" 2>/dev/null; }
+
+# Fresh budget for this step, so a slow instance start doesn't eat the WinRM wait.
+# Poll every host each pass (not one after another) and report as each comes up.
+declare -A WAIT_IP=() WAIT_NAME=()
 for r in "${ROWS[@]}"; do
     IFS=$'\t' read -r id name state platform public private <<< "$r"
     [[ "$platform" == "windows" ]] || continue
     [[ -z "$public" ]] && { echo "    $name has no public IP; skipping"; continue; }
-    until tcp_open "$public" 5985; do check_timeout "WinRM on $name"; sleep 10; done
-    echo "    $name  WinRM up"
+    WAIT_IP[$id]="$public"; WAIT_NAME[$id]="$name"
 done
+GONE=()
+winrm_deadline=$(( $(date +%s) + TIMEOUT_MINS * 60 ))
+while (( ${#WAIT_IP[@]} )); do
+    for id in "${!WAIT_IP[@]}"; do
+        if tcp_open "${WAIT_IP[$id]}" 5985; then
+            echo "    ${WAIT_NAME[$id]}  WinRM up"; unset "WAIT_IP[$id]"
+        fi
+    done
+    (( ${#WAIT_IP[@]} )) || break
+    # A box that stopped or was terminated mid-wait will never answer; drop it now
+    # instead of burning the whole timeout on it.
+    while IFS=$'\t' read -r id st reason; do
+        [[ -v "WAIT_IP[$id]" && "$st" != "running" ]] || continue
+        echo "WARN: ${WAIT_NAME[$id]} ($id) is now $st; it won't come up. $reason" >&2
+        GONE+=("${WAIT_NAME[$id]}"); unset "WAIT_IP[$id]"
+    done < <("${AWS[@]}" ec2 describe-instances --instance-ids "${!WAIT_IP[@]}" \
+             | jq -r '.Reservations[].Instances[] | [.InstanceId, .State.Name, ((.StateTransitionReason // "") + " " + (.StateReason.Message // ""))] | @tsv')
+    (( ${#WAIT_IP[@]} )) || break
+    (( $(date +%s) > winrm_deadline )) && break
+    sleep 10
+done
+
+# Don't abort the whole launch on one stuck box: say why it looks stuck, then carry on
+# so the summary, state file and the other hosts still work.
+for id in "${!WAIT_IP[@]}"; do
+    name="${WAIT_NAME[$id]}"; ip="${WAIT_IP[$id]}"
+    echo "WARN: $name : no WinRM on $ip:5985 after ${TIMEOUT_MINS} min." >&2
+    "${AWS[@]}" ec2 describe-instance-status --instance-ids "$id" \
+        | jq -r --arg n "$name" '.InstanceStatuses[0] // {} | "    \($n)  EC2 status checks: system=\(.SystemStatus.Status // "n/a")  instance=\(.InstanceStatus.Status // "n/a")"' || true
+    if tcp_open "$ip" 3389; then
+        echo "    $name  RDP (3389) answers, so Windows is up: WinRM service/listener or its firewall rule is off. RDP in and run: Enable-PSRemoting -Force"
+    else
+        echo "    $name  RDP (3389) doesn't answer either: still booting, hung, or the SG/NACL blocks you. Last console lines:"
+        "${AWS[@]}" ec2 get-console-output --instance-id "$id" --query Output --output text 2>/dev/null \
+            | tr -d '\r' | grep -v '^\s*$' | tail -n 5 | sed 's/^/        /' || echo "        (no console output yet)"
+    fi
+done
+if (( ${#WAIT_IP[@]} )); then
+    stuck=(); for id in "${!WAIT_IP[@]}"; do stuck+=("${WAIT_NAME[$id]}"); done
+    echo "WARN: continuing without WinRM on: ${stuck[*]}. Re-run later or raise --timeout." >&2
+fi
+if (( ${#GONE[@]} )); then
+    echo "WARN: lost during launch: ${GONE[*]}. If terminated, rebuild with the PowerShell launcher: ./Start-AwsLab.ps1 -RebuildIfMissing" >&2
+    mapfile -t ROWS < <(lab_instances | name_filter)   # keep vanished boxes out of the summary and state file
+fi
 
 # --- 5. summary + state ------------------------------------------------------
 step "Lab is up"
@@ -236,14 +284,22 @@ if [[ "$MOUNT" -eq 1 ]]; then
     else
         step "Mounting //$share_ip/LabLogs at $MOUNT_POINT"
         mkdir -p "$MOUNT_POINT"
-        # Public IP changes each launch, so unmount a stale mount at this point first.
-        mountpoint -q "$MOUNT_POINT" && sudo umount "$MOUNT_POINT" 2>/dev/null || true
-        if sudo mount -t cifs "//${share_ip}/LabLogs" "$MOUNT_POINT" \
-               -o "credentials=${CRED_FILE},vers=3.0,uid=$(id -u),gid=$(id -g)" 2>/tmp/awslab-mount.err; then
-            echo "    mounted at $MOUNT_POINT"
+        # Already mounted from this same share (member01 kept its IP) and still answering?
+        # Keep it: no unmount, no sudo prompt.
+        if mountpoint -q "$MOUNT_POINT" \
+           && [[ "$(findmnt -n -o SOURCE --target "$MOUNT_POINT" 2>/dev/null)" == "//${share_ip}/LabLogs" ]] \
+           && timeout 5 ls "$MOUNT_POINT" >/dev/null 2>&1; then
+            echo "    already mounted; leaving it"
         else
-            echo "WARN: mount failed: $(cat /tmp/awslab-mount.err)" >&2
-            echo "WARN: if it timed out, your ISP may block outbound SMB (445); logs still collect over WinRM." >&2
+            # Public IP changes each launch, so unmount a stale mount at this point first.
+            mountpoint -q "$MOUNT_POINT" && sudo umount "$MOUNT_POINT" 2>/dev/null || true
+            if sudo mount -t cifs "//${share_ip}/LabLogs" "$MOUNT_POINT" \
+                   -o "credentials=${CRED_FILE},vers=3.0,uid=$(id -u),gid=$(id -g)" 2>/tmp/awslab-mount.err; then
+                echo "    mounted at $MOUNT_POINT"
+            else
+                echo "WARN: mount failed: $(cat /tmp/awslab-mount.err)" >&2
+                echo "WARN: if it timed out, your ISP may block outbound SMB (445); logs still collect over WinRM." >&2
+            fi
         fi
     fi
 fi

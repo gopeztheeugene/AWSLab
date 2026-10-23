@@ -23,14 +23,26 @@
     Starts only the instances whose Name tag (or instance ID) matches. Wildcards work: -Name '*DC*'.
 
 .EXAMPLE
-    ./Start-AwsLab.ps1 -Connect -WinRmUser 'LAB\Administrator'
-    After launch, opens one Windows Terminal tab per reachable instance, already connecting.
+    ./Start-AwsLab.ps1 -WinRmUser 'LAB\Administrator'
+    After launch, opens one Windows Terminal tab per reachable instance, already connecting,
+    with the WinRM user name pre-filled.
+.EXAMPLE
+    ./Start-AwsLab.ps1 -NoConnect
+    Launch only; print the connect commands but open no tabs.
+
+.EXAMPLE
+    ./Start-AwsLab.ps1 -RebuildIfMissing
+    If the DC/member were terminated (e.g. by a reset), recreate them from the
+    golden AMIs first, then start the lab as usual.
 
 .PARAMETER Name
     Optional. Name tags or instance IDs to start; wildcards allowed. Omit to start every lab instance.
+.PARAMETER NoConnect
+    Don't open terminal tabs. By default (Windows only) the script opens one tab per reachable
+    instance: WinRM session for Windows hosts, SSH for Kali. Uses Windows Terminal if installed,
+    otherwise separate windows.
 .PARAMETER Connect
-    Optional. Open a terminal tab per reachable instance (Windows only): WinRM session for
-    Windows hosts, SSH for Kali. Uses Windows Terminal if installed, otherwise separate windows.
+    Kept so older commands still work; tabs now open by default.
 .PARAMETER WinRmUser
     Optional. Pre-fills the user name in each Windows tab's credential prompt.
 .PARAMETER ShareHostName
@@ -41,6 +53,13 @@
     Optional. Credential for the log share; prompts once if omitted.
 .PARAMETER NoMountShare
     Skip mounting the log share.
+.PARAMETER RebuildIfMissing
+    If a golden-backed box (dc / member01) isn't present, recreate it from the
+    newest golden AMI (tag Baseline=golden), using the launch settings stored on
+    that AMI as Launch* tags. Off by default, so a misconfigured run (wrong
+    region/profile/creds) can't silently spawn duplicate instances.
+    The DC is launched first and the rest wait until it passes its status checks,
+    so the member boots onto a working domain network.
 #>
 [CmdletBinding()]
 param(
@@ -48,10 +67,12 @@ param(
     [string]   $Region           = 'ap-southeast-2',
     [string]   $ProfileName,
     [string[]] $SecurityGroupIds = @('sg-02df021a36003f4f1', 'sg-0549668744af8e82d'),
-    [int]      $TimeoutMinutes   = 15,
+    [int]      $TimeoutMinutes   = 15,   # per phase: instance start, then WinRM
     [string]   $StatePath        = (Join-Path $PSScriptRoot 'lab-state.json'),
     [string]   $KaliKeyPath      = 'C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem',
-    [switch]   $Connect,
+    [switch]   $RebuildIfMissing,
+    [switch]   $NoConnect,
+    [switch]   $Connect,   # legacy: tabs are now the default
     [string]   $WinRmUser,
     [string]        $ShareHostName   = 'member01',
     [string]        $ShareDrive      = 'L:',
@@ -105,7 +126,7 @@ function Test-TcpPort([string]$HostName, [int]$Port, [int]$TimeoutMs = 3000) {
 }
 
 function Get-ConnectCommand($Entry) {
-    # One place builds the connect command, used for both the printed hints and -Connect tabs
+    # One place builds the connect command, used for both the printed hints and the terminal tabs
     $q = { param($s) "'" + ($s -replace "'", "''") + "'" }   # PowerShell single-quote escaping
     if ($Entry.Os -eq 'Windows') {
         $user = if ($WinRmUser) { " -UserName $(& $q $WinRmUser)" } else { '' }
@@ -122,9 +143,144 @@ function Assert-NotTimedOut([string]$What) {
     if ((Get-Date) -gt $deadline) { throw "Timed out after $TimeoutMinutes min waiting for $What." }
 }
 
+function Wait-RebuiltDc([string]$InstanceId) {
+    # Status checks pass once Windows has booted; the extra minute lets AD DS and
+    # DNS finish starting. On timeout, warn and carry on rather than block the rebuild.
+    Write-Host "    waiting for the DC ($InstanceId) to pass status checks before launching the rest"
+    $until  = (Get-Date).AddMinutes($TimeoutMinutes)
+    $waited = $false
+    while ($true) {
+        try {
+            $st = Get-EC2InstanceStatus -InstanceId $InstanceId @aws
+        } catch {
+            # A just-launched ID can take a few seconds to show up (EC2 is eventually consistent).
+            if ("$($_.Exception.Message)" -match 'does not exist' -or "$($_.Exception.ErrorCode)" -eq 'InvalidInstanceID.NotFound') { $st = $null } else { throw }
+        }
+        if ($st -and "$($st.Status.Status)" -eq 'ok' -and "$($st.SystemStatus.Status)" -eq 'ok') { break }
+        $waited = $true
+        if ((Get-Date) -gt $until) {
+            Write-Warning "Rebuilt DC $InstanceId didn't pass status checks within $TimeoutMinutes min; launching the rest anyway. If a member's WinRM stays down, restart it once the DC is up."
+            return
+        }
+        Start-Sleep -Seconds 15
+    }
+    if ($waited) { Start-Sleep -Seconds 60 }   # only a fresh boot needs AD DS/DNS settle time
+    Write-Host '    DC is up'
+}
+
+function Invoke-LabRebuild {
+    # Recreate any golden-backed lab box (identified by its LaunchName tag) that
+    # isn't currently present -- e.g. the DC/member were terminated by step 4's
+    # reset. Each golden AMI carries its own launch settings as Launch* tags
+    # (written by New-GoldenBaseline.ps1), so this needs nothing hard-coded.
+    # Returns $true if it launched anything.
+    param([string[]] $LiveNames)
+
+    Write-Step 'Checking for golden-backed boxes to rebuild'
+
+    $amis = @(Get-EC2Image -Owner self -Filter @(
+        @{ Name = 'tag:Baseline'; Values = 'golden' }
+        @{ Name = 'state';        Values = 'available' }
+    ) @aws)
+    if (-not $amis) {
+        Write-Warning 'No available golden AMIs (tag Baseline=golden). Capture one with New-GoldenBaseline.ps1 first; nothing to rebuild.'
+        return $false
+    }
+
+    # Keep only the newest AMI per target box (by LaunchName), by creation time.
+    $newest = $amis |
+        Where-Object { ($_.Tags | Where-Object Key -eq 'LaunchName').Value } |
+        Group-Object { ($_.Tags | Where-Object Key -eq 'LaunchName').Value } |
+        ForEach-Object { $_.Group | Sort-Object CreationDate -Descending | Select-Object -First 1 }
+
+    # Rebuild the DC first, and wait for it, so it's up before the member boots and
+    # re-establishes its secure channel.
+    $order  = @{ dc = 0 }
+    $newest = $newest | Sort-Object {
+        $n = ($_.Tags | Where-Object Key -eq 'LaunchName').Value
+        if ($order.ContainsKey($n)) { $order[$n] } else { 9 }
+    }
+
+    $launchedAny  = $false
+    $dcLaunchedId = $null
+    $dcWaited     = $false
+    foreach ($ami in $newest) {
+        $tag = @{}
+        $ami.Tags | ForEach-Object { $tag[$_.Key] = $_.Value }
+        $boxName = $tag['LaunchName']
+
+        if ($LiveNames -contains $boxName) { continue }   # already present; don't duplicate
+
+        # A member that boots before the DC's AD/DNS is up can't detect its domain
+        # network, falls back to the Public firewall profile and blocks WinRM from
+        # outside the subnet. So hold the rest until the rebuilt DC passes its status checks.
+        # The DC may be from this run or an earlier one that stopped partway; wait on it if it's booting.
+        if (-not $order.ContainsKey($boxName) -and -not $dcWaited) {
+            $dcId = $dcLaunchedId
+            if (-not $dcId) {
+                $dcId = @(Get-LabInstances -All | Where-Object {
+                    $order.ContainsKey((Get-InstanceName $_)) -and "$($_.State.Name)" -in 'pending', 'running'
+                })[0].InstanceId
+            }
+            if ($dcId) { Wait-RebuiltDc $dcId }
+            $dcWaited = $true
+        }
+
+        foreach ($need in 'LaunchInstanceType', 'LaunchSubnetId', 'LaunchKeyName', 'LaunchSecurityGroupIds') {
+            if (-not $tag[$need]) {
+                throw "Golden AMI $($ami.ImageId) for '$boxName' is missing tag '$need'. Re-capture with New-GoldenBaseline.ps1 (or add the tag) before rebuilding."
+            }
+        }
+
+        Write-Host "    rebuilding '$boxName' from $($ami.ImageId)  (type $($tag['LaunchInstanceType']), ip $($tag['LaunchPrivateIp']))"
+
+        $runParams = @{
+            ImageId         = $ami.ImageId
+            InstanceType    = $tag['LaunchInstanceType']
+            SubnetId        = $tag['LaunchSubnetId']
+            KeyName         = $tag['LaunchKeyName']
+            SecurityGroupId = @($tag['LaunchSecurityGroupIds'] -split ',')
+            MinCount        = 1
+            MaxCount        = 1
+        }
+        if ($tag['LaunchPrivateIp'])     { $runParams.PrivateIpAddress    = $tag['LaunchPrivateIp'] }
+        if ($tag['LaunchIamProfileArn']) { $runParams.InstanceProfile_Arn = $tag['LaunchIamProfileArn'] }
+
+        # Tag at launch: a separate tag call right after launch can hit "instance does not exist".
+        $nameTag = [Amazon.EC2.Model.TagSpecification]::new()
+        $nameTag.ResourceType = 'instance'
+        $nameTag.Tags = [System.Collections.Generic.List[Amazon.EC2.Model.Tag]]::new()
+        $nameTag.Tags.Add([Amazon.EC2.Model.Tag]::new('Name', $boxName))
+
+        try {
+            $res = New-EC2Instance @runParams -TagSpecification $nameTag @aws
+        } catch {
+            if ("$($_.Exception.Message)" -match 'in use' -or "$($_.Exception.ErrorCode)" -match 'InUse') {
+                throw "Private IP $($tag['LaunchPrivateIp']) for '$boxName' is still in use -- a just-terminated instance may not have released it yet. Wait ~1 min and re-run."
+            }
+            throw
+        }
+
+        $newId = $res.Instances.InstanceId
+        Write-Host "    launched $boxName -> $newId"
+        if ($order.ContainsKey($boxName)) { $dcLaunchedId = $newId }
+        $launchedAny = $true
+    }
+
+    if (-not $launchedAny) { Write-Host '    nothing missing; all golden-backed boxes already present' }
+    return $launchedAny
+}
+
 # --- 1. Find and start the instances ----------------------------------------
 Write-Step "Finding lab instances in $Region"
 $instances = Get-LabInstances
+if ($RebuildIfMissing) {
+    $liveNames = @($instances | ForEach-Object { Get-InstanceName $_ })
+    if (Invoke-LabRebuild -LiveNames $liveNames) {
+        Start-Sleep -Seconds 5
+        $instances = Get-LabInstances   # re-discover to include the rebuilt boxes
+    }
+}
 if (-not $instances) {
     if ($Name) {
         $names = (Get-LabInstances -All | ForEach-Object { Get-InstanceName $_ }) -join ', '
@@ -209,13 +365,62 @@ Write-Step 'Waiting for WinRM (5985) on Windows hosts'
 $instances = Get-LabInstances   # refresh: public IPs change on every start
 $windows   = @($instances | Where-Object { Test-IsWindows $_ })
 
-foreach ($w in $windows) {
-    if (-not $w.PublicIpAddress) { Write-Warning "$(Get-InstanceName $w) has no public IP; skipping WinRM check."; continue }
-    while (-not (Test-TcpPort $w.PublicIpAddress 5985)) {
-        Assert-NotTimedOut "WinRM on $(Get-InstanceName $w)"
-        Start-Sleep -Seconds 10
+# Fresh budget for this step, so a slow instance start doesn't eat the WinRM wait.
+# Poll every host each pass (not one after another) and report as each comes up.
+$winrmDeadline = (Get-Date).AddMinutes($TimeoutMinutes)
+$pending = @($windows | Where-Object {
+    if ($_.PublicIpAddress) { $true } else { Write-Warning "$(Get-InstanceName $_) has no public IP; skipping WinRM check."; $false }
+})
+$gone = @()
+while ($pending) {
+    $pending = @($pending | Where-Object {
+        if (Test-TcpPort $_.PublicIpAddress 5985) { Write-Host "    $(Get-InstanceName $_)  WinRM up"; $false } else { $true }
+    })
+    # A box that stopped or was terminated mid-wait will never answer; drop it now
+    # instead of burning the whole timeout on it.
+    if ($pending) {
+        $live = @{}
+        (Get-EC2Instance -InstanceId $pending.InstanceId @aws).Instances | ForEach-Object { $live[$_.InstanceId] = $_ }
+        $pending = @($pending | Where-Object {
+            $now = $live[$_.InstanceId]
+            if ($now -and "$($now.State.Name)" -eq 'running') { return $true }
+            $state  = if ($now) { "$($now.State.Name)" } else { 'gone' }
+            $reason = if ($now) { "$($now.StateTransitionReason) $($now.StateReason.Message)".Trim() } else { '' }
+            Write-Warning "$(Get-InstanceName $_) ($($_.InstanceId)) is now $state; it won't come up. $reason"
+            $script:gone += $_
+            $false
+        })
     }
-    Write-Host "    $(Get-InstanceName $w)  WinRM up"
+    if (-not $pending -or (Get-Date) -gt $winrmDeadline) { break }
+    Start-Sleep -Seconds 10
+}
+
+# Don't abort the whole launch on one stuck box: say why it looks stuck, then carry on
+# so the summary, state file and the other hosts still work.
+foreach ($w in $pending) {
+    $n = Get-InstanceName $w
+    Write-Warning "$n : no WinRM on $($w.PublicIpAddress):5985 after $TimeoutMinutes min."
+    try {
+        $st = Get-EC2InstanceStatus -InstanceId $w.InstanceId @aws
+        Write-Host "    $n  EC2 status checks: system=$($st.SystemStatus.Status)  instance=$($st.Status.Status)"
+    } catch { Write-Host "    $n  couldn't read EC2 status checks: $($_.Exception.Message)" }
+    if (Test-TcpPort $w.PublicIpAddress 3389) {
+        Write-Host "    $n  RDP (3389) answers, so Windows is up: WinRM service/listener or its firewall rule is off. RDP in and run: Enable-PSRemoting -Force"
+    } else {
+        Write-Host "    $n  RDP (3389) doesn't answer either: still booting, hung, or the SG/NACL blocks you. Last console lines:"
+        try {
+            $raw = (Get-EC2ConsoleOutput -InstanceId $w.InstanceId @aws).Output
+            if ($raw) {
+                [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($raw)) -split "`r?`n" |
+                    Where-Object { $_.Trim() } | Select-Object -Last 5 | ForEach-Object { Write-Host "        $_" }
+            } else { Write-Host '        (no console output yet)' }
+        } catch { Write-Host "        couldn't read console output: $($_.Exception.Message)" }
+    }
+}
+if ($pending) { Write-Warning "Continuing without WinRM on: $(($pending | ForEach-Object { Get-InstanceName $_ }) -join ', '). Re-run later or raise -TimeoutMinutes." }
+if ($gone) {
+    Write-Warning "Lost during launch: $(($gone | ForEach-Object { Get-InstanceName $_ }) -join ', '). If terminated, rebuild with: ./Start-AwsLab.ps1 -RebuildIfMissing"
+    $instances = Get-LabInstances   # keep vanished boxes out of the summary and state file
 }
 
 # --- 5. Summary and state file ----------------------------------------------
@@ -258,32 +463,82 @@ if (-not $NoMountShare) {
     } else {
         $remote = "\\$($shareHost.PublicIp)\LabLogs"
         Write-Step "Mounting $remote on $ShareDrive"
-        # Public IP changes every launch, so clear only THIS drive's stale mapping.
-        # Shares mapped to other drive letters are left untouched.
-        Get-SmbMapping -LocalPath $ShareDrive -ErrorAction SilentlyContinue |
-            Remove-SmbMapping -Force -ErrorAction SilentlyContinue
-        if (-not $ShareCredential) {
-            $ShareCredential = Get-Credential -Message "Log share login for $($shareHost.Name) (e.g. LAB\Administrator)"
-        }
-        try {
-            New-SmbMapping -LocalPath $ShareDrive -RemotePath $remote `
-                -UserName $ShareCredential.UserName `
-                -Password $ShareCredential.GetNetworkCredential().Password `
-                -Persistent $false | Out-Null
-            Write-Host "    mounted $remote -> $ShareDrive"
-        } catch {
-            Write-Warning "Couldn't mount $remote : $_"
-            Write-Warning "If that timed out, your ISP may block outbound SMB (445); logs can still be pulled over WinRM (5985)."
+
+        # Already mapped to this same share (member01 kept its IP, e.g. it was already
+        # running) and still answering? Keep it, and don't ask for credentials again.
+        $existing = Get-SmbMapping -LocalPath $ShareDrive -ErrorAction SilentlyContinue
+        $live = $existing -and $existing.RemotePath -eq $remote -and "$($existing.Status)" -eq 'OK' -and
+                (Test-Path "$ShareDrive\" -ErrorAction SilentlyContinue)
+
+        if ($live) {
+            Write-Host "    already mounted; leaving it"
+        } else {
+            # Public IP changes every launch, so clear only THIS drive's stale mapping.
+            # Shares mapped to other drive letters are left untouched.
+            if ($existing) { $existing | Remove-SmbMapping -Force -ErrorAction SilentlyContinue }
+            if (-not $ShareCredential) {
+                $ShareCredential = Get-Credential -Message "Log share login for $($shareHost.Name) (e.g. LAB\Administrator)"
+            }
+            try {
+                New-SmbMapping -LocalPath $ShareDrive -RemotePath $remote `
+                    -UserName $ShareCredential.UserName `
+                    -Password $ShareCredential.GetNetworkCredential().Password `
+                    -Persistent $false | Out-Null
+                Write-Host "    mounted $remote -> $ShareDrive"
+            } catch {
+                Write-Warning "Couldn't mount $remote : $_"
+                Write-Warning "If that timed out, your ISP may block outbound SMB (445); logs can still be pulled over WinRM (5985)."
+            }
         }
     }
 }
 
-# --- 7. Optional: one terminal tab per instance -----------------------------
-if ($Connect) {
+# --- 7. One terminal tab per instance (skip with -NoConnect) ----------------
+if (-not $NoConnect) {
     Write-Step 'Opening a terminal per instance'
     if (-not $IsWindows) {
-        Write-Warning '-Connect opens Windows Terminal tabs and only works on Windows; use the commands above.'
+        Write-Host '    terminal tabs are Windows-only; use the commands above'
     } else {
+        # The WinRM tabs need this laptop's WinRM service running and the hosts' new public
+        # IPs in TrustedHosts; both need admin. Do just that part elevated (one UAC prompt,
+        # only when something is missing) so the tabs and the L: mapping stay unelevated.
+        $winIps = @($summary | Where-Object { $_.Os -eq 'Windows' -and $_.Reachable } | ForEach-Object PublicIp)
+        if ($winIps) {
+            $svcUp   = "$((Get-Service WinRM -ErrorAction SilentlyContinue).Status)" -eq 'Running'
+            # Read TrustedHosts from the registry: the WSMan: drive needs admin and a running service.
+            $trusted = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WSMAN\Client' -Name trusted_hosts -ErrorAction SilentlyContinue).trusted_hosts
+            $listed  = @("$trusted" -split ',' | ForEach-Object Trim)
+            $missing = @($winIps | Where-Object { $listed -notcontains '*' -and $listed -notcontains $_ })
+            if (-not $svcUp -or $missing) {
+                # Import the WSMan module explicitly: PowerShell doesn't autoload it for a WSMan:
+                # path, so in a fresh -NoProfile process the drive may not exist yet.
+                $fix = "`$ErrorActionPreference = 'Stop'; Start-Service WinRM"
+                if ($missing) {
+                    $newList = (@($listed | Where-Object { $_ }) + $missing) -join ','
+                    $fix += "; Import-Module Microsoft.WSMan.Management; Set-Item WSMan:\localhost\Client\TrustedHosts -Value '$newList' -Force"
+                }
+                $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+                try {
+                    if ($isAdmin) {
+                        Invoke-Expression $fix
+                    } else {
+                        Write-Host '    WinRM client setup needs admin; approve the UAC prompt'
+                        $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($fix))
+                        $p = Start-Process (Get-Process -Id $PID).Path -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
+                                -ArgumentList "-NoProfile -EncodedCommand $enc"
+                        if ($p.ExitCode) { throw "elevated setup exited with code $($p.ExitCode)" }
+                    }
+                    # Trust but verify: the elevated helper runs hidden, so check its result here.
+                    $after = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WSMAN\Client' -Name trusted_hosts -ErrorAction SilentlyContinue).trusted_hosts
+                    $still = @($missing | Where-Object { @("$after" -split ',' | ForEach-Object Trim) -notcontains $_ })
+                    if ($still) { throw "TrustedHosts still lacks $($still -join ', ')" }
+                    Write-Host "    WinRM client ready$(if ($missing) { "; trusted $($missing -join ', ')" })"
+                } catch {
+                    Write-Warning "Couldn't set up the WinRM client ($($_.Exception.Message)); the WinRM tabs may fail. From an admin prompt run: $fix"
+                }
+            }
+        }
+
         $useWt = [bool](Get-Command wt.exe -ErrorAction SilentlyContinue)
         if (-not $useWt) { Write-Warning 'Windows Terminal not found; opening separate windows instead.' }
 

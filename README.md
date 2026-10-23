@@ -55,8 +55,8 @@ Also after the first run, delete any security group rules you added by hand for 
 ./Start-AwsLab.ps1 -Name '*DC*', Kali       # several, with wildcards
 ./Start-AwsLab.ps1 -Name i-0123456789abcdef # by instance ID
 ./Start-AwsLab.ps1 -ProfileName lab         # use a named AWS profile
-./Start-AwsLab.ps1 -Connect                 # also open a terminal tab per instance
-./Start-AwsLab.ps1 -Connect -WinRmUser 'LAB\Administrator'   # pre-fill the WinRM user name
+./Start-AwsLab.ps1 -NoConnect               # launch only; don't open terminal tabs
+./Start-AwsLab.ps1 -WinRmUser 'LAB\Administrator'   # pre-fill the WinRM user name in the tabs
 ./Start-AwsLab.ps1 -Name dc, member01, kali # start just these three
 ./Start-AwsLab.ps1 -NoMountShare            # start the lab but don't map the log share
 ```
@@ -71,10 +71,10 @@ Also after the first run, delete any security group rules you added by hand for 
 | `-Region` | `ap-southeast-2` | AWS region |
 | `-ProfileName` | *(default credentials)* | AWS credential profile |
 | `-SecurityGroupIds` | the two lab SGs | Groups used to find instances and to open to your IP |
-| `-TimeoutMinutes` | `15` | Overall limit for instances to start and WinRM to come up |
+| `-TimeoutMinutes` | `15` | Limit for instances to start, then a fresh limit for WinRM to come up. A host still without WinRM is reported (EC2 status checks, RDP probe, last console lines) and the launch carries on |
 | `-StatePath` | `./lab-state.json` | Where the launch state is written |
 | `-KaliKeyPath` | `C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem` | SSH key used in the Kali connect command |
-| `-Connect` | off | Open one terminal tab per reachable instance, already connecting |
+| `-NoConnect` | off | Don't open the terminal tabs (by default one opens per reachable instance, already connecting) |
 | `-WinRmUser` | *(none)* | User name pre-filled in each Windows tab's credential prompt |
 | `-ShareHostName` | `member01` | Name tag of the member server hosting the log share; wildcards allowed |
 | `-ShareDrive` | `L:` | Drive letter the log share is mapped to on this laptop |
@@ -90,9 +90,9 @@ Enter-PSSession -ComputerName <dc-public-ip> -Credential (Get-Credential -Messag
 ssh -i 'C:\Users\egopez\Documents\Pentest study\ec2keys\kali-linux.pem' kali@<kali-public-ip>
 ```
 
-**`-Connect`** runs those commands for you. It opens one tab per reachable instance in a single Windows Terminal window named `AWSLab`, each tab titled with the instance name. Windows tabs open a WinRM session and ask for the login; the Kali tab SSHes in with your key. Tabs stay open after you exit the session, so you can reconnect with the up arrow. Instances that aren't reachable are skipped with a warning. Without Windows Terminal it opens separate PowerShell windows instead; on macOS or Linux it does nothing but print the commands.
+By default the script runs those commands for you (skip with **`-NoConnect`**). It opens one tab per reachable instance in a single Windows Terminal window named `AWSLab`, each tab titled with the instance name. Windows tabs open a WinRM session and ask for the login; the Kali tab SSHes in with your key. Tabs stay open after you exit the session, so you can reconnect with the up arrow. Instances that aren't reachable are skipped with a warning. Without Windows Terminal it opens separate PowerShell windows instead; on macOS or Linux it does nothing but print the commands.
 
-WinRM over HTTP to a bare IP needs the target in your laptop's TrustedHosts. This is a one-time setup from an elevated prompt:
+WinRM over HTTP to a bare IP needs your laptop's WinRM service running and the target in its TrustedHosts. Before opening the tabs, the script checks both and, if anything is missing, fixes just that in an elevated helper (one UAC prompt), adding only the new lab IPs. The tabs themselves stay unelevated, so the `L:` mapping is visible in them. To set it up yourself instead, once, from an elevated prompt:
 
 ```powershell
 Start-Service WinRM
@@ -110,7 +110,8 @@ by default; pass `-NoMountShare` to skip it.
 Because the member server's public IP changes on every launch, the script first clears any
 mapping on that one drive letter, then re-maps it — so a stale mapping from last session
 can't get in the way. **Only that drive letter is touched; shares you've mapped to other
-letters are left alone.** Give `-ShareCredential` to avoid the one-time login prompt.
+letters are left alone.** If the drive is already mapped to the same share and still answering (member01 kept its IP),
+it's left as is and you aren't asked for credentials. Give `-ShareCredential` to avoid the one-time login prompt.
 
 > This mounts SMB (445) over the public internet. Your SG only admits your own IP, but many
 > ISPs block outbound 445 — if the mount times out, that's usually why, and it's only the

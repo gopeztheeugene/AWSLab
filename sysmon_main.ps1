@@ -53,7 +53,7 @@ while ($true) {
 
 try{
     Start-Process ` -FilePath "$dest\Sysmon64.exe" `
-    -ArgumentList "-accepteula", "-i", "$dest\sysmon_config.xml"
+    -ArgumentList "-accepteula", "-i", "$sysmon_config"
     if($?){Write-Log "Config Loaded"}
 }
 catch{
