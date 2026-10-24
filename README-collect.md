@@ -7,7 +7,8 @@ PC; transport is WinRM over HTTP 5985 (PSRP), no SMB.
 
 ## What it collects
 
-Driven by a per-topic manifest, `collection/<topic>.psd1`, which names — per host —
+Driven by a per-topic manifest that lives **with the topic** — in the IOT repo at
+`learnjob/research/topics/<slug>/lab/collect.psd1` — which names — per host —
 which logs to pull and which event IDs are the signal. For each host it:
 
 - exports each named log in full to `.evtx` (`wevtutil` on the host, copied back
@@ -21,15 +22,21 @@ Output goes to `<OutputRoot>/<topic>/<timestamp>/<host>/…` (OutputRoot default
 ## Usage
 
 ```powershell
-./Collect-TopicLogs.ps1 -Topic kerberoast -WhatIf          # show plan, connect to nothing
-./Collect-TopicLogs.ps1 -Topic kerberoast                  # pull all hosts in the manifest
-./Collect-TopicLogs.ps1 -Topic kerberoast -Hosts dc -SinceMinutes 120
-./Collect-TopicLogs.ps1 -Topic kerberoast -OutputRoot ~/lab-logs   # Linux mini PC
+# point -ManifestPath at the topic's manifest in the IOT repo; topic name comes from the file
+$m = '~/IOT/learnjob/research/topics/kerberoasting/lab/collect.psd1'
+./Collect-TopicLogs.ps1 -ManifestPath $m -WhatIf          # show plan, connect to nothing
+./Collect-TopicLogs.ps1 -ManifestPath $m                  # pull all hosts in the manifest
+./Collect-TopicLogs.ps1 -ManifestPath $m -Hosts dc -SinceMinutes 120
+./Collect-TopicLogs.ps1 -ManifestPath $m -OutputRoot ~/lab-logs   # Linux mini PC
 ```
+
+The run machine needs **both repos** checked out (AWSLab for the script, IOT for the
+manifest). On the mini PC the IOT repo is already present (that's where `lj` runs).
 
 | Parameter | Default | Purpose |
 |---|---|---|
-| `-Topic` | (required) | Manifest `collection/<topic>.psd1` |
+| `-ManifestPath` | — | Path to the topic's `collect.psd1` (IOT `.../topics/<slug>/lab/`) |
+| `-Topic` | from manifest | Topic name; or finds `<ManifestDir>/<Topic>.psd1` (back-compat) |
 | `-Hosts` | all in manifest | Limit to these Name tags |
 | `-SinceMinutes` | 0 (whole log) | Only events newer than this |
 | `-OutputRoot` | `L:` / `~/lab-logs` | Where to write |

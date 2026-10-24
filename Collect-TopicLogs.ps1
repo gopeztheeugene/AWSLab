@@ -18,17 +18,22 @@
     under pwsh 7 on either the Windows laptop or the Linux mini PC.
 
 .EXAMPLE
-    ./Collect-TopicLogs.ps1 -Topic kerberoast
-    Pull the kerberoast logs from the hosts named in the manifest into the share.
+    ./Collect-TopicLogs.ps1 -ManifestPath ~/IOT/learnjob/research/topics/kerberoasting/lab/collect.psd1
+    Point it at the topic's manifest in the IOT repo. The topic name comes from
+    the manifest itself.
 .EXAMPLE
-    ./Collect-TopicLogs.ps1 -Topic kerberoast -SinceMinutes 120 -OutputRoot ~/lab-logs
+    ./Collect-TopicLogs.ps1 -ManifestPath ../IOT/.../kerberoasting/lab/collect.psd1 -SinceMinutes 120 -OutputRoot ~/lab-logs
     Only events from the last 2 hours; write under ~/lab-logs (Linux mini PC).
 .EXAMPLE
     ./Collect-TopicLogs.ps1 -Topic kerberoast -WhatIf
-    Show what would be collected from where; connect to nothing.
+    Back-compat: look for ./collection/kerberoast.psd1. Show the plan, connect to nothing.
 
+.PARAMETER ManifestPath
+    Full path to the topic's collection manifest. Per-topic configs live with the
+    topic (e.g. the IOT repo's learnjob/research/topics/<slug>/lab/collect.psd1).
 .PARAMETER Topic
-    Manifest to use: collection/<Topic>.psd1.
+    Topic name. Taken from the manifest when -ManifestPath is given; otherwise used
+    to find <ManifestDir>/<Topic>.psd1.
 .PARAMETER Hosts
     Override the manifest's host list (Name tags). Default: all hosts in the manifest.
 .PARAMETER SinceMinutes
@@ -40,11 +45,12 @@
 .PARAMETER StatePath
     lab-state.json from step 1. Default next to this script.
 .PARAMETER ManifestDir
-    Folder holding <topic>.psd1. Default ./collection.
+    Back-compat: folder holding <topic>.psd1 when -Topic is used without -ManifestPath. Default ./collection.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [Parameter(Mandatory)][string] $Topic,
+    [string]        $ManifestPath,
+    [string]        $Topic,
     [string[]]      $Hosts,
     [int]           $SinceMinutes = 0,
     [string]        $OutputRoot,
@@ -57,9 +63,20 @@ $ErrorActionPreference = 'Stop'
 function Write-Step([string]$m) { Write-Host "==> $m" -ForegroundColor Cyan }
 
 # --- Manifest ----------------------------------------------------------------
-$manifestPath = Join-Path $ManifestDir "$Topic.psd1"
-if (-not (Test-Path $manifestPath)) { throw "No collection manifest at $manifestPath. Topics available: $((Get-ChildItem $ManifestDir -Filter *.psd1 -ErrorAction SilentlyContinue).BaseName -join ', ')" }
+# Per-topic configs live with the topic (IOT repo:
+# learnjob/research/topics/<slug>/lab/collect.psd1) -- point -ManifestPath at one.
+# -Topic + -ManifestDir still resolve a local ./collection/<topic>.psd1.
+if ($ManifestPath) {
+    $manifestPath = $ManifestPath
+} elseif ($Topic) {
+    $manifestPath = Join-Path $ManifestDir "$Topic.psd1"
+} else {
+    throw 'Give -ManifestPath <file> (e.g. .../topics/<slug>/lab/collect.psd1), or -Topic <name> to look in -ManifestDir.'
+}
+if (-not (Test-Path $manifestPath)) { throw "No collection manifest at $manifestPath." }
 $manifest = Import-PowerShellDataFile -Path $manifestPath
+if (-not $Topic) { $Topic = $manifest.Topic }
+if (-not $Topic) { throw "Manifest $manifestPath has no 'Topic' field; pass -Topic explicitly." }
 
 $hostNames = if ($Hosts) { $Hosts } else { @($manifest.Hosts.Keys) }
 if (-not $hostNames) { throw "Manifest $manifestPath lists no hosts." }
